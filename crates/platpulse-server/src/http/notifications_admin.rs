@@ -29,7 +29,7 @@ use utoipa::ToSchema;
 
 use crate::auth::now_utc;
 use crate::config::NotificationChannels;
-use crate::http::admin::{mutation_error, mutation_guard};
+use crate::http::admin::{mutation_error, mutation_guard, storage_failure};
 use crate::http::{AppState, AuthenticatedSession, RequestId};
 use crate::notifications::{
     AttemptRow, DeliveryRow, EventRow, NotificationRequestRow, RetryError, TestSendError,
@@ -192,7 +192,8 @@ pub struct RequestIdBody {
 enum RequestReplayError {
     /// The same request id is recorded for a different command intent.
     Conflict,
-    Unavailable,
+    /// The ledger read failed.
+    Database(sqlx::Error),
 }
 
 /// Reconcile a mutation's request id against the ledger. `Ok(Some(row))` is a
@@ -208,30 +209,28 @@ async fn resolve_request_replay(
         Ok(Some(row)) if row.intent_fingerprint == fingerprint => Ok(Some(row)),
         Ok(Some(_)) => Err(RequestReplayError::Conflict),
         Ok(None) => Ok(None),
-        Err(_) => Err(RequestReplayError::Unavailable),
+        Err(error) => Err(RequestReplayError::Database(error)),
     }
 }
 
 /// The recorded answer to a Retry request id, when a transaction recorded it:
 /// the same request-replay result a sequential duplicate receives, with no
-/// second re-arm, Audit row, or ledger entry. `None` means no transaction has
-/// recorded this request id yet, so the caller keeps whatever answer it was
-/// about to give.
+/// second re-arm, Audit row, or ledger entry. `Ok(None)` means no transaction
+/// has recorded this request id yet, so the caller keeps whatever answer it was
+/// about to give; a failed read is an error, never "not recorded".
 async fn recorded_retry_replay(
     state: &AppState,
     request_id: &str,
     fingerprint: &str,
     now: OffsetDateTime,
-) -> Option<Response> {
-    let mut tx = match crate::database::begin(state.db().pool()).await {
-        Ok(tx) => tx,
-        Err(_) => return None,
-    };
+) -> Result<Option<Response>, sqlx::Error> {
+    let mut tx = crate::database::begin(state.db().pool()).await?;
     let replay = match resolve_request_replay(&mut tx, request_id, fingerprint, now).await {
-        Err(RequestReplayError::Conflict) => Some(request_id_conflict(request_id)),
-        Err(RequestReplayError::Unavailable) | Ok(None) => None,
+        Err(RequestReplayError::Conflict) => Ok(Some(request_id_conflict(request_id))),
+        Err(RequestReplayError::Database(error)) => Err(error),
+        Ok(None) => Ok(None),
         Ok(Some(existing)) => match load_delivery(&mut tx, &existing.delivery_id).await {
-            Ok(Some(delivery)) => Some(
+            Ok(Some(delivery)) => Ok(Some(
                 Json(DeliveryRetryResponse {
                     delivery,
                     audit_event_id: existing.audit_event_id,
@@ -239,8 +238,9 @@ async fn recorded_retry_replay(
                     deduplicated: true,
                 })
                 .into_response(),
-            ),
-            _ => None,
+            )),
+            Ok(None) => Ok(None),
+            Err(error) => Err(error),
         },
     };
     let _ = tx.rollback().await;
@@ -339,14 +339,7 @@ pub(crate) async fn notification_events(
     .await;
     let events = match rows {
         Ok(events) => events,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let event_ids: Vec<&str> = events.iter().map(|event| event.event_id.as_str()).collect();
     let mut items = Vec::with_capacity(events.len());
@@ -364,14 +357,7 @@ pub(crate) async fn notification_events(
         }
         let deliveries = match builder.fetch_all(state.db().pool()).await {
             Ok(rows) => rows,
-            Err(_) => {
-                return mutation_error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "Server database is unavailable",
-                );
-            }
+            Err(error) => return storage_failure(&state, &request_id.0, &error),
         };
         for event in events {
             let event_deliveries: Vec<DeliverySummary> = deliveries
@@ -413,14 +399,7 @@ pub(crate) async fn notification_event_detail(
 ) -> Response {
     let mut conn = match state.db().pool().acquire().await {
         Ok(conn) => conn,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let event = match load_event(&mut conn, &event_id).await {
         Ok(Some(event)) => event,
@@ -432,25 +411,11 @@ pub(crate) async fn notification_event_detail(
                 "unknown Notification Event",
             );
         }
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let deliveries = match deliveries_for_event(&mut conn, &event_id).await {
         Ok(deliveries) => deliveries,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     Json(NotificationEventDetail { event, deliveries }).into_response()
 }
@@ -514,14 +479,7 @@ pub(crate) async fn notification_deliveries(
     .await;
     let items = match rows {
         Ok(items) => items,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let next_before = (items.len() as i64 == limit)
         .then(|| items.last().map(|item| item.delivery_id.clone()))
@@ -546,14 +504,7 @@ pub(crate) async fn notification_delivery_detail(
 ) -> Response {
     let mut conn = match state.db().pool().acquire().await {
         Ok(conn) => conn,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let delivery = match load_delivery(&mut conn, &delivery_id).await {
         Ok(Some(delivery)) => delivery,
@@ -565,25 +516,11 @@ pub(crate) async fn notification_delivery_detail(
                 "unknown Notification Delivery",
             );
         }
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let attempts = match attempts_for_delivery(&mut conn, &delivery_id).await {
         Ok(attempts) => attempts,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let event = match load_event(&mut conn, &delivery.event_id).await {
         Ok(Some(event)) => event,
@@ -595,14 +532,7 @@ pub(crate) async fn notification_delivery_detail(
                 "Notification Event is missing",
             );
         }
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     Json(NotificationDeliveryDetail {
         delivery,
@@ -655,29 +585,29 @@ pub(crate) async fn retry_delivery(
     let fingerprint = request_intent_fingerprint("retry", &delivery_id);
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => return unavailable_error(&request_id.0),
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
-    if prune_expired_notification_requests(&mut tx, now)
-        .await
-        .is_err()
-    {
+    if let Err(error) = prune_expired_notification_requests(&mut tx, now).await {
         let _ = tx.rollback().await;
-        return unavailable_error(&request_id.0);
+        return storage_failure(&state, &request_id.0, &error);
     }
     match resolve_request_replay(&mut tx, &payload.request_id, &fingerprint, now).await {
         Err(RequestReplayError::Conflict) => {
             let _ = tx.rollback().await;
             return request_id_conflict(&request_id.0);
         }
-        Err(RequestReplayError::Unavailable) => {
+        Err(RequestReplayError::Database(error)) => {
             let _ = tx.rollback().await;
-            return unavailable_error(&request_id.0);
+            return storage_failure(&state, &request_id.0, &error);
         }
         Ok(Some(_)) => {
             let _ = tx.rollback().await;
-            return recorded_retry_replay(&state, &payload.request_id, &fingerprint, now)
-                .await
-                .unwrap_or_else(|| unavailable_error(&request_id.0));
+            return match recorded_retry_replay(&state, &payload.request_id, &fingerprint, now).await
+            {
+                Ok(Some(response)) => response,
+                Ok(None) => unavailable_error(&request_id.0),
+                Err(error) => storage_failure(&state, &request_id.0, &error),
+            };
         }
         Ok(None) => {}
     }
@@ -694,10 +624,10 @@ pub(crate) async fn retry_delivery(
         }
         Err(RetryError::AlreadyQueued) => {
             let _ = tx.rollback().await;
-            if let Some(response) =
-                recorded_retry_replay(&state, &payload.request_id, &fingerprint, now).await
-            {
-                return response;
+            match recorded_retry_replay(&state, &payload.request_id, &fingerprint, now).await {
+                Ok(Some(response)) => return response,
+                Ok(None) => {}
+                Err(error) => return storage_failure(&state, &request_id.0, &error),
             }
             return (
                 StatusCode::CONFLICT,
@@ -710,12 +640,16 @@ pub(crate) async fn retry_delivery(
             )
                 .into_response();
         }
+        Err(RetryError::Database(error)) => {
+            let _ = tx.rollback().await;
+            return storage_failure(&state, &request_id.0, &error);
+        }
         Err(RetryError::NotRetryable { state: _ }) => {
             let _ = tx.rollback().await;
-            if let Some(response) =
-                recorded_retry_replay(&state, &payload.request_id, &fingerprint, now).await
-            {
-                return response;
+            match recorded_retry_replay(&state, &payload.request_id, &fingerprint, now).await {
+                Ok(Some(response)) => return response,
+                Ok(None) => {}
+                Err(error) => return storage_failure(&state, &request_id.0, &error),
             }
             return (
                 StatusCode::CONFLICT,
@@ -744,9 +678,9 @@ pub(crate) async fn retry_delivery(
     .await
     {
         Ok(id) => id,
-        Err(_) => {
+        Err(error) => {
             let _ = tx.rollback().await;
-            return unavailable_error(&request_id.0);
+            return storage_failure(&state, &request_id.0, &error);
         }
     };
     match insert_notification_request(
@@ -765,17 +699,20 @@ pub(crate) async fn retry_delivery(
         Ok(true) => {}
         Ok(false) => {
             let _ = tx.rollback().await;
-            return recorded_retry_replay(&state, &payload.request_id, &fingerprint, now)
-                .await
-                .unwrap_or_else(|| unavailable_error(&request_id.0));
+            return match recorded_retry_replay(&state, &payload.request_id, &fingerprint, now).await
+            {
+                Ok(Some(response)) => response,
+                Ok(None) => unavailable_error(&request_id.0),
+                Err(error) => storage_failure(&state, &request_id.0, &error),
+            };
         }
-        Err(_) => {
+        Err(error) => {
             let _ = tx.rollback().await;
-            return unavailable_error(&request_id.0);
+            return storage_failure(&state, &request_id.0, &error);
         }
     }
-    if tx.commit().await.is_err() {
-        return unavailable_error(&request_id.0);
+    if let Err(error) = tx.commit().await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     state
         .admin_realtime()
@@ -937,7 +874,10 @@ pub(crate) async fn test_notification_channel(
             }
             return response;
         }
-        Err(TestSendError::Unavailable) => return unavailable_error(&request_id.0),
+        Err(TestSendError::Database(error)) => {
+            return storage_failure(&state, &request_id.0, &error);
+        }
+        Err(TestSendError::MissingRecord) => return unavailable_error(&request_id.0),
     };
     if !outcome.deduplicated {
         state
@@ -975,11 +915,11 @@ pub(crate) async fn notification_request_result(
     let now = now_utc();
     let mut conn = match state.db().pool().acquire().await {
         Ok(conn) => conn,
-        Err(_) => return unavailable_error(&extension_request_id.0),
+        Err(error) => return storage_failure(&state, &extension_request_id.0, &error),
     };
     let row = match load_notification_request(&mut conn, &request_id, now).await {
         Ok(row) => row,
-        Err(_) => return unavailable_error(&extension_request_id.0),
+        Err(error) => return storage_failure(&state, &extension_request_id.0, &error),
     };
     let Some(row) = row else {
         return mutation_error(
@@ -991,7 +931,8 @@ pub(crate) async fn notification_request_result(
     };
     let delivery = match load_delivery(&mut conn, &row.delivery_id).await {
         Ok(Some(delivery)) => delivery,
-        _ => return unavailable_error(&extension_request_id.0),
+        Ok(None) => return unavailable_error(&extension_request_id.0),
+        Err(error) => return storage_failure(&state, &extension_request_id.0, &error),
     };
     Json(NotificationRequestResult {
         request_id: row.request_id,
@@ -1752,6 +1693,21 @@ mod tests {
             json_body(command_id),
         )
         .await
+    }
+
+    #[tokio::test]
+    async fn a_failed_test_notification_ledger_read_is_a_storage_failure() {
+        let (_dir, state, _provider) = test_state().await;
+        sqlx::query("ALTER TABLE notification_requests RENAME TO notification_requests_unreadable")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let response = test_command(&state, "req-db-failure").await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let value = body_json(response).await;
+        assert_eq!(value["error"]["code"], "unavailable", "{value}");
+        assert_eq!(value["error"]["message"], "Server database is unavailable");
     }
 
     #[tokio::test]

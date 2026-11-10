@@ -856,6 +856,17 @@ pub(crate) fn is_corruption_error(error: &sqlx::Error) -> bool {
     sqlite::is_corruption_error(error) || postgres::is_corruption_error(error)
 }
 
+/// Whether a statement broke a unique or check constraint: a schema or
+/// invariant bug, not an outage, so callers keep it apart from
+/// `unavailable`. Both drivers classify their own errors.
+pub(crate) fn is_constraint_violation(error: &sqlx::Error) -> bool {
+    matches!(
+        error,
+        sqlx::Error::Database(database)
+            if database.is_unique_violation() || database.is_check_violation()
+    )
+}
+
 /// Defer foreign-key enforcement to the commit of the current transaction.
 pub(crate) async fn defer_foreign_keys(connection: &mut AnyConnection) -> Result<(), sqlx::Error> {
     match connection.backend_name() {

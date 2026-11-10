@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
 
-use crate::http::admin::{mutation_error, mutation_guard};
+use crate::http::admin::{mutation_error, mutation_guard, storage_failure};
 use crate::http::{ApiErrorBody, AppState, AuthenticatedSession, RequestId};
 use crate::operations;
 
@@ -254,16 +254,8 @@ pub(crate) async fn history_window(
     Extension(_principal): Extension<AuthenticatedSession>,
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
-    if crate::retention::ensure_seeded(state.db().pool())
-        .await
-        .is_err()
-    {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
+    if let Err(error) = crate::retention::ensure_seeded(state.db().pool()).await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     match crate::retention::list_policies(state.db().pool()).await {
         Ok(policies) => policies
@@ -279,12 +271,7 @@ pub(crate) async fn history_window(
                     "history window is not configured",
                 )
             }),
-        Err(_) => mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        ),
+        Err(error) => storage_failure(&state, &request_id.0, &error),
     }
 }
 
@@ -328,13 +315,8 @@ pub(crate) async fn history_window_impact(
     .await
     {
         Ok((rows, unsupported)) => (!unsupported).then_some(rows),
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
+        Err(error) => {
+            return storage_failure(&state, &request_id.0, &error);
         }
     };
     let catalog =
@@ -371,16 +353,8 @@ pub(crate) async fn update_history_window(
     if let Some(response) = mutation_guard(&headers, &principal, state.auth(), &request_id, true) {
         return response;
     }
-    if crate::retention::ensure_seeded(state.db().pool())
-        .await
-        .is_err()
-    {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
+    if let Err(error) = crate::retention::ensure_seeded(state.db().pool()).await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     if !request.confirmed {
         return (
@@ -409,13 +383,8 @@ pub(crate) async fn update_history_window(
     }
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
+        Err(error) => {
+            return storage_failure(&state, &request_id.0, &error);
         }
     };
     let before_days = match sqlx::query_scalar::<_, i64>(
@@ -435,18 +404,13 @@ pub(crate) async fn update_history_window(
                 "history window is not configured",
             );
         }
-        Err(_) => {
+        Err(error) => {
             let _ = tx.rollback().await;
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
+            return storage_failure(&state, &request_id.0, &error);
         }
     };
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-    if sqlx::query(
+    if let Err(error) = sqlx::query(
         "UPDATE retention_policies SET retention_days = $1, enabled = 1, updated_at = $2, updated_by = $3 WHERE family = $4",
     )
     .bind(request.window_days)
@@ -455,15 +419,9 @@ pub(crate) async fn update_history_window(
     .bind(family)
     .execute(&mut *tx)
     .await
-    .is_err()
     {
         let _ = tx.rollback().await;
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
+        return storage_failure(&state, &request_id.0, &error);
     }
     let audit_event_id = match crate::auth::insert_audit_change(
         &mut *tx,
@@ -477,23 +435,13 @@ pub(crate) async fn update_history_window(
     .await
     {
         Ok(id) => id,
-        Err(_) => {
+        Err(error) => {
             let _ = tx.rollback().await;
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
+            return storage_failure(&state, &request_id.0, &error);
         }
     };
-    if tx.commit().await.is_err() {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
+    if let Err(error) = tx.commit().await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     state
         .admin_realtime()
@@ -520,12 +468,7 @@ pub(crate) async fn update_history_window(
                     "history window is not configured",
                 )
             }),
-        Err(_) => mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        ),
+        Err(error) => storage_failure(&state, &request_id.0, &error),
     }
 }
 
@@ -835,13 +778,8 @@ pub(crate) async fn operations_list(
             .into_iter()
             .map(operation_summary_row)
             .collect::<Vec<_>>(),
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
+        Err(error) => {
+            return storage_failure(&state, &request_id.0, &error);
         }
     };
     Json(items).into_response()
@@ -873,12 +811,7 @@ pub(crate) async fn operation_detail(
             )),
         )
             .into_response(),
-        Err(_) => mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        ),
+        Err(error) => storage_failure(&state, &request_id.0, &error),
     }
 }
 
@@ -904,25 +837,26 @@ pub(crate) async fn cancel_operation(
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
+        Err(error) => {
+            return storage_failure(&state, &request_id.0, &error);
         }
     };
     // The recorded plan is read with the status: cancelling a queued Operation
     // makes it terminal, so this handler - not a worker - records what that
     // Operation did and did not release.
-    let current: Option<(String, i64, String, String)> = sqlx::query_as(
+    let current: Option<(String, i64, String, String)> = match sqlx::query_as(
         "SELECT status, cancel_requested, kind, params_json FROM operations WHERE operation_id = $1",
     )
     .bind(&operation_id)
     .fetch_optional(&mut *tx)
     .await
-    .unwrap_or(None);
+    {
+        Ok(current) => current,
+        Err(error) => {
+            let _ = tx.rollback().await;
+            return storage_failure(&state, &request_id.0, &error);
+        }
+    };
     let Some((status, already, kind, params_json)) = current else {
         let _ = tx.rollback().await;
         return (
@@ -970,7 +904,7 @@ pub(crate) async fn cancel_operation(
     } else {
         None
     };
-    if sqlx::query(
+    if let Err(error) = sqlx::query(
         "UPDATE operations SET cancel_requested = 1, status = $1, result_json = COALESCE(result_json, $2), finished_at = COALESCE(finished_at, $3) WHERE operation_id = $4",
     )
     .bind(new_status)
@@ -979,15 +913,9 @@ pub(crate) async fn cancel_operation(
     .bind(&operation_id)
     .execute(&mut *tx)
     .await
-    .is_err()
     {
         let _ = tx.rollback().await;
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
+        return storage_failure(&state, &request_id.0, &error);
     }
     let audit_event_id = match crate::auth::insert_audit_event(
         &mut *tx,
@@ -1000,30 +928,23 @@ pub(crate) async fn cancel_operation(
     .await
     {
         Ok(id) => id,
-        Err(_) => {
+        Err(error) => {
             let _ = tx.rollback().await;
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
+            return storage_failure(&state, &request_id.0, &error);
         }
     };
-    if tx.commit().await.is_err() {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
+    if let Err(error) = tx.commit().await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     state
         .admin_realtime()
         .publish(AdminResource::Operations, Some(&operation_id));
     let detail = match load_operation_detail(state.db().pool(), &operation_id).await {
         Ok(Some(detail)) => detail,
-        _ => {
+        Err(error) => {
+            return storage_failure(&state, &request_id.0, &error);
+        }
+        Ok(None) => {
             return mutation_error(
                 &request_id.0,
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -1056,37 +977,19 @@ pub(crate) async fn retention_overview(
     Extension(_session): Extension<AuthenticatedSession>,
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
-    if crate::retention::ensure_seeded(state.db().pool())
-        .await
-        .is_err()
-    {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
+    if let Err(error) = crate::retention::ensure_seeded(state.db().pool()).await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     let policies = match crate::retention::list_policies(state.db().pool()).await {
         Ok(policies) => policies,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
+        Err(error) => {
+            return storage_failure(&state, &request_id.0, &error);
         }
     };
     let last_run = match last_operation_of_kind(state.db().pool(), "retention_run").await {
         Ok(run) => run,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
+        Err(error) => {
+            return storage_failure(&state, &request_id.0, &error);
         }
     };
     // Only a preview that still binds is replayed: an expired or superseded one
@@ -1098,13 +1001,8 @@ pub(crate) async fn retention_overview(
     .await
     {
         Ok(preview) => preview.as_ref().map(preview_dto),
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
+        Err(error) => {
+            return storage_failure(&state, &request_id.0, &error);
         }
     };
     let dto = RetentionOverview {
@@ -1248,13 +1146,8 @@ pub(crate) async fn retention_impact(
     .await
     {
         Ok((rows, unsupported)) => (Some(rows), unsupported),
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
+        Err(error) => {
+            return storage_failure(&state, &request_id.0, &error);
         }
     };
     Json(RetentionImpact {
@@ -1317,22 +1210,23 @@ pub(crate) async fn update_retention_policy(
     }
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
+        Err(error) => {
+            return storage_failure(&state, &request_id.0, &error);
         }
     };
-    let before: Option<(i64, String)> = sqlx::query_as(
+    let before: Option<(i64, String)> = match sqlx::query_as(
         "SELECT retention_days, updated_at FROM retention_policies WHERE family = $1",
     )
     .bind(&family)
     .fetch_optional(&mut *tx)
     .await
-    .unwrap_or(None);
+    {
+        Ok(before) => before,
+        Err(error) => {
+            let _ = tx.rollback().await;
+            return storage_failure(&state, &request_id.0, &error);
+        }
+    };
     let Some((before_days, before_updated_at)) = before else {
         let _ = tx.rollback().await;
         return (
@@ -1364,7 +1258,7 @@ pub(crate) async fn update_retention_policy(
             .into_response();
     }
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-    if sqlx::query(
+    if let Err(error) = sqlx::query(
         "UPDATE retention_policies SET retention_days = $1, enabled = 1, updated_at = $2, updated_by = $3 WHERE family = $4",
     )
     .bind(request.retention_days)
@@ -1373,15 +1267,9 @@ pub(crate) async fn update_retention_policy(
     .bind(&family)
     .execute(&mut *tx)
     .await
-    .is_err()
     {
         let _ = tx.rollback().await;
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
+        return storage_failure(&state, &request_id.0, &error);
     }
     let audit_event_id = match crate::auth::insert_audit_event(
         &mut *tx,
@@ -1397,36 +1285,21 @@ pub(crate) async fn update_retention_policy(
     .await
     {
         Ok(id) => id,
-        Err(_) => {
+        Err(error) => {
             let _ = tx.rollback().await;
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
+            return storage_failure(&state, &request_id.0, &error);
         }
     };
-    if tx.commit().await.is_err() {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
+    if let Err(error) = tx.commit().await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     state
         .admin_realtime()
         .publish(AdminResource::Retention, None::<String>);
     let policies = match crate::retention::list_policies(state.db().pool()).await {
         Ok(policies) => policies,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
+        Err(error) => {
+            return storage_failure(&state, &request_id.0, &error);
         }
     };
     let Some(policy) = policies.into_iter().find(|policy| policy.family == family) else {
@@ -1499,6 +1372,9 @@ pub(crate) async fn retention_preview(
             )),
         )
             .into_response(),
+        Err(crate::retention::PreviewError::Database(error)) => {
+            storage_failure(&state, &request_id.0, &error)
+        }
         Err(_) => mutation_error(
             &request_id.0,
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1595,6 +1471,9 @@ pub(crate) async fn retention_run(
                 .into_response();
         }
         Ok(_) => {}
+        Err(operations::OperationError::Sqlx(error)) => {
+            return storage_failure(&state, &request_id.0, &error);
+        }
         Err(_) => {
             return mutation_error(
                 &request_id.0,
@@ -1639,13 +1518,8 @@ pub(crate) async fn retention_run(
             )
                 .into_response();
         }
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
+        Err(error) => {
+            return storage_failure(&state, &request_id.0, &error);
         }
     };
     let plan = crate::retention::preview_plan(&preview);
@@ -1722,6 +1596,9 @@ pub(crate) async fn retention_run(
             )),
         )
             .into_response(),
+        Err(operations::OperationError::Sqlx(error)) => {
+            storage_failure(&state, &request_id.0, &error)
+        }
         Err(_) => mutation_error(
             &request_id.0,
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1753,7 +1630,8 @@ async fn retention_run_response(
             deduplicated,
         })
         .into_response(),
-        _ => mutation_error(
+        Err(error) => storage_failure(state, &http_request_id.0, &error),
+        Ok(None) => mutation_error(
             &http_request_id.0,
             StatusCode::SERVICE_UNAVAILABLE,
             "unavailable",
@@ -1821,13 +1699,8 @@ pub(crate) async fn backups_list(
                 },
             )
             .collect::<Vec<_>>(),
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
+        Err(error) => {
+            return storage_failure(&state, &request_id.0, &error);
         }
     };
     Json(items).into_response()
@@ -1899,12 +1772,7 @@ pub(crate) async fn backup_artifact_detail(
             )),
         )
             .into_response(),
-        Err(_) => mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        ),
+        Err(error) => storage_failure(&state, &request_id.0, &error),
     }
 }
 
@@ -1927,11 +1795,14 @@ pub(crate) async fn backup_verify(
         return response;
     }
     let exists: Option<(String,)> =
-        sqlx::query_as("SELECT artifact_id FROM backup_artifacts WHERE artifact_id = $1")
+        match sqlx::query_as("SELECT artifact_id FROM backup_artifacts WHERE artifact_id = $1")
             .bind(&artifact_id)
             .fetch_optional(state.db().pool())
             .await
-            .unwrap_or(None);
+        {
+            Ok(exists) => exists,
+            Err(error) => return storage_failure(&state, &request_id.0, &error),
+        };
     if exists.is_none() {
         return (
             StatusCode::NOT_FOUND,
@@ -1958,6 +1829,44 @@ pub(crate) async fn backup_verify(
 // ---------------------------------------------------------------------------
 // Restore (issue #51)
 // ---------------------------------------------------------------------------
+
+/// A Restore identity read that failed is never an unknown artifact. Database
+/// failures keep their storage classification; any other failure is logged and
+/// answered as an unreadable artifact, never as a 404.
+#[track_caller]
+fn restore_artifact_read_failure(
+    state: &AppState,
+    request_id: &str,
+    error: crate::restore::RestoreError,
+) -> Response {
+    match &error {
+        crate::restore::RestoreError::Sqlx(failure)
+        | crate::restore::RestoreError::Operation(crate::operations::OperationError::Sqlx(
+            failure,
+        )) => storage_failure(state, request_id, failure),
+        crate::restore::RestoreError::Database(failure) => match failure.as_sqlx() {
+            Some(failure) => storage_failure(state, request_id, failure),
+            None => {
+                tracing::error!(error = %failure, "restore artifact identity read failed");
+                mutation_error(
+                    request_id,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "restore_unavailable",
+                    "backup artifact could not be read",
+                )
+            }
+        },
+        _ => {
+            tracing::error!(error = %error, "restore artifact identity read failed");
+            mutation_error(
+                request_id,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "restore_unavailable",
+                "backup artifact could not be read",
+            )
+        }
+    }
+}
 
 /// Read-only Restore validation: identity selection plus fresh checksum,
 /// integrity, and schema-compatibility verification of the artifact file.
@@ -1996,13 +1905,8 @@ pub(crate) async fn restore_validate(
                 )
                     .into_response();
             }
-            Err(_) => {
-                return mutation_error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "Server database is unavailable",
-                );
+            Err(error) => {
+                return restore_artifact_read_failure(&state, &request_id.0, error);
             }
         };
     let Some(backup_dir) = state.backup_dir().map(|path| path.to_path_buf()) else {
@@ -2099,13 +2003,8 @@ pub(crate) async fn restore_submit(
                 )
                     .into_response();
             }
-            Err(_) => {
-                return mutation_error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "Server database is unavailable",
-                );
+            Err(error) => {
+                return restore_artifact_read_failure(&state, &request_id.0, error);
             }
         };
     if !crate::restore::confirmation_matches(&request.confirmation, &identity.filename) {
@@ -2152,25 +2051,26 @@ pub(crate) async fn doctor_overview(
     Extension(_session): Extension<AuthenticatedSession>,
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
-    let (last_run, current_run) = match (
-        crate::doctor::last_run(&state).await,
-        crate::doctor::current_run(&state).await,
-    ) {
-        (Ok(last_run), Ok(current_run)) => (last_run, current_run),
-        _ => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
+    let last_run = match crate::doctor::last_run(&state).await {
+        Ok(last_run) => last_run,
+        Err(error) => {
+            return storage_failure(&state, &request_id.0, &error);
+        }
+    };
+    let current_run = match crate::doctor::current_run(&state).await {
+        Ok(current_run) => current_run,
+        Err(error) => {
+            return storage_failure(&state, &request_id.0, &error);
         }
     };
     let (summary, checks) = match last_run {
         Some((operation_id, result)) => {
             let summary = match load_operation_summary(state.db().pool(), &operation_id).await {
                 Ok(Some(summary)) => summary,
-                _ => {
+                Err(error) => {
+                    return storage_failure(&state, &request_id.0, &error);
+                }
+                Ok(None) => {
                     return mutation_error(
                         &request_id.0,
                         StatusCode::SERVICE_UNAVAILABLE,
@@ -2193,13 +2093,8 @@ pub(crate) async fn doctor_overview(
         Some(operation_id) => {
             match load_operation_summary(state.db().pool(), &operation_id).await {
                 Ok(summary) => summary,
-                Err(_) => {
-                    return mutation_error(
-                        &request_id.0,
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "unavailable",
-                        "Server database is unavailable",
-                    );
+                Err(error) => {
+                    return storage_failure(&state, &request_id.0, &error);
                 }
             }
         }
@@ -2376,13 +2271,8 @@ pub(crate) async fn capacity_overview(
     .await
     {
         Ok(intervals) => intervals,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
+        Err(error) => {
+            return storage_failure(&state, &request_id.0, &error);
         }
     };
     let config = capacity.config();
@@ -2527,7 +2417,14 @@ pub(crate) async fn storage_overview(
             // Re-read instead of reusing the value the open path validated:
             // the Operator opens this surface to see the server that is
             // answering now.
-            let version = db.postgres_server_version().await.ok();
+            let version = match db.postgres_server_version().await {
+                Ok(version) => Some(version),
+                Err(error) => {
+                    state.note_database_error(&error);
+                    tracing::error!(error = %error, "postgres server version read failed");
+                    None
+                }
+            };
             Some(PostgresStorageDto {
                 host: facts.host,
                 port: facts.port,
@@ -2570,6 +2467,9 @@ async fn queue_operation(
     .await
     {
         Ok(ids) => ids,
+        Err(operations::OperationError::Sqlx(error)) => {
+            return storage_failure(state, &request_id.0, &error);
+        }
         Err(_) => {
             return mutation_error(
                 &request_id.0,
@@ -2584,7 +2484,10 @@ async fn queue_operation(
         .publish(AdminResource::Operations, Some(&operation_id));
     let detail = match load_operation_detail(state.db().pool(), &operation_id).await {
         Ok(Some(detail)) => detail,
-        _ => {
+        Err(error) => {
+            return storage_failure(state, &request_id.0, &error);
+        }
+        Ok(None) => {
             return mutation_error(
                 &request_id.0,
                 StatusCode::SERVICE_UNAVAILABLE,

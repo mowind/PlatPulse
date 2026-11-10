@@ -199,14 +199,7 @@ pub(super) async fn admin_node_transfers(
 ) -> Response {
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let known: Option<i64> = match sqlx::query_scalar("SELECT 1 FROM nodes WHERE node_id=$1")
         .bind(&node_id)
@@ -214,14 +207,7 @@ pub(super) async fn admin_node_transfers(
         .await
     {
         Ok(value) => value,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     if known.is_none() {
         return mutation_error(
@@ -232,16 +218,8 @@ pub(super) async fn admin_node_transfers(
         );
     }
     let now_text = crate::auth::format_rfc3339(crate::auth::now_utc());
-    if materialize_expired_node_transfers(&mut tx, &node_id, &now_text)
-        .await
-        .is_err()
-    {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        );
+    if let Err(error) = materialize_expired_node_transfers(&mut tx, &node_id, &now_text).await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     let rows = sqlx::query_as::<_, NodeTransferRow>(&format!(
         "SELECT {TRANSFER_COLUMNS} FROM node_transfers WHERE node_id=$1 ORDER BY created_at DESC"
@@ -251,22 +229,10 @@ pub(super) async fn admin_node_transfers(
     .await;
     let rows = match rows {
         Ok(rows) => rows,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
-    if tx.commit().await.is_err() {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        );
+    if let Err(error) = tx.commit().await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     Json(rows.into_iter().map(node_transfer_dto).collect::<Vec<_>>()).into_response()
 }
@@ -343,14 +309,7 @@ pub(crate) async fn create_node_transfer(
     let _node_fence = state.write_fences().nodes.hold(&node_id).await;
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let owner: Option<String> =
         match sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id=$1")
@@ -359,14 +318,7 @@ pub(crate) async fn create_node_transfer(
             .await
         {
             Ok(value) => value,
-            Err(_) => {
-                return mutation_error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "server database is unavailable",
-                );
-            }
+            Err(error) => return storage_failure(&state, &request_id.0, &error),
         };
     let Some(source_agent_id) = owner else {
         return mutation_error(
@@ -394,14 +346,7 @@ pub(crate) async fn create_node_transfer(
             .await
         {
             Ok(value) => value,
-            Err(_) => {
-                return mutation_error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "server database is unavailable",
-                );
-            }
+            Err(error) => return storage_failure(&state, &request_id.0, &error),
         };
     if target_known.is_none() {
         return mutation_error(
@@ -411,16 +356,8 @@ pub(crate) async fn create_node_transfer(
             "the target Agent is not registered",
         );
     }
-    if materialize_expired_node_transfers(&mut tx, &node_id, &now_text)
-        .await
-        .is_err()
-    {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        );
+    if let Err(error) = materialize_expired_node_transfers(&mut tx, &node_id, &now_text).await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     let pending: Option<String> = match sqlx::query_scalar(
         "SELECT transfer_id FROM node_transfers WHERE node_id=$1 AND status='pending'",
@@ -430,21 +367,14 @@ pub(crate) async fn create_node_transfer(
     .await
     {
         Ok(value) => value,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     if pending.is_some() {
         // The conflict is a typed, auditable outcome: the attempt is
         // retained in history, ownership is untouched, and the response is
         // the standard error envelope (request ID included).
         let transfer_id = uuid::Uuid::new_v4().to_string();
-        if sqlx::query("INSERT INTO node_transfers (transfer_id, node_id, source_agent_id, target_agent_id, status, operator_reason, created_at, expires_at, updated_at) VALUES ($1, $2, $3, $4, 'conflict', $5, $6, $7, $8)")
+        if let Err(error) = sqlx::query("INSERT INTO node_transfers (transfer_id, node_id, source_agent_id, target_agent_id, status, operator_reason, created_at, expires_at, updated_at) VALUES ($1, $2, $3, $4, 'conflict', $5, $6, $7, $8)")
             .bind(&transfer_id)
             .bind(&node_id)
             .bind(&source_agent_id)
@@ -455,14 +385,8 @@ pub(crate) async fn create_node_transfer(
             .bind(&now_text)
             .execute(&mut *tx)
             .await
-            .is_err()
         {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
+            return storage_failure(&state, &request_id.0, &error);
         }
         let audit_event_id = match crate::auth::insert_audit_event(
             &mut *tx,
@@ -479,22 +403,10 @@ pub(crate) async fn create_node_transfer(
         .await
         {
             Ok(value) => value,
-            Err(_) => {
-                return mutation_error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "server database is unavailable",
-                );
-            }
+            Err(error) => return storage_failure(&state, &request_id.0, &error),
         };
-        if tx.commit().await.is_err() {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
+        if let Err(error) = tx.commit().await {
+            return storage_failure(&state, &request_id.0, &error);
         }
         // The conflict is a typed, auditable outcome: the response carries
         // the request and Audit references so the operator can look the
@@ -512,7 +424,7 @@ pub(crate) async fn create_node_transfer(
             .into_response();
     }
     let transfer_id = uuid::Uuid::new_v4().to_string();
-    if sqlx::query("INSERT INTO node_transfers (transfer_id, node_id, source_agent_id, target_agent_id, status, operator_reason, created_at, expires_at, updated_at) VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7, $8)")
+    if let Err(error) = sqlx::query("INSERT INTO node_transfers (transfer_id, node_id, source_agent_id, target_agent_id, status, operator_reason, created_at, expires_at, updated_at) VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7, $8)")
         .bind(&transfer_id)
         .bind(&node_id)
         .bind(&source_agent_id)
@@ -523,14 +435,8 @@ pub(crate) async fn create_node_transfer(
         .bind(&now_text)
         .execute(&mut *tx)
         .await
-        .is_err()
     {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        );
+        return storage_failure(&state, &request_id.0, &error);
     }
     let audit_event_id = match crate::auth::insert_audit_event(
         &mut *tx,
@@ -549,14 +455,7 @@ pub(crate) async fn create_node_transfer(
     .await
     {
         Ok(value) => value,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let row = match sqlx::query_as::<_, NodeTransferRow>(&format!(
         "SELECT {TRANSFER_COLUMNS} FROM node_transfers WHERE transfer_id=$1"
@@ -566,22 +465,10 @@ pub(crate) async fn create_node_transfer(
     .await
     {
         Ok(row) => row,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
-    if tx.commit().await.is_err() {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        );
+    if let Err(error) = tx.commit().await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     state
         .admin_realtime()
@@ -610,26 +497,11 @@ pub(super) async fn admin_transfer_detail(
 ) -> Response {
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let now_text = crate::auth::format_rfc3339(crate::auth::now_utc());
-    if materialize_expired_transfer(&mut tx, &transfer_id, &now_text)
-        .await
-        .is_err()
-    {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        );
+    if let Err(error) = materialize_expired_transfer(&mut tx, &transfer_id, &now_text).await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     let row = sqlx::query_as::<_, NodeTransferRow>(&format!(
         "SELECT {TRANSFER_COLUMNS} FROM node_transfers WHERE transfer_id=$1"
@@ -639,14 +511,7 @@ pub(super) async fn admin_transfer_detail(
     .await;
     let row = match row {
         Ok(row) => row,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let Some(row) = row else {
         return mutation_error(
@@ -656,13 +521,8 @@ pub(super) async fn admin_transfer_detail(
             "resource not found",
         );
     };
-    if tx.commit().await.is_err() {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        );
+    if let Err(error) = tx.commit().await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     Json(node_transfer_dto(row)).into_response()
 }
@@ -697,14 +557,7 @@ pub(crate) async fn cancel_node_transfer(
             .await;
     let transfer_node = match transfer_node {
         Ok(node) => node,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let _node_fence = match &transfer_node {
         Some(node_id) => Some(state.write_fences().nodes.hold(node_id).await),
@@ -712,26 +565,11 @@ pub(crate) async fn cancel_node_transfer(
     };
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let now_text = crate::auth::format_rfc3339(crate::auth::now_utc());
-    if materialize_expired_transfer(&mut tx, &transfer_id, &now_text)
-        .await
-        .is_err()
-    {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        );
+    if let Err(error) = materialize_expired_transfer(&mut tx, &transfer_id, &now_text).await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     let row = sqlx::query_as::<_, NodeTransferRow>(&format!(
         "SELECT {TRANSFER_COLUMNS} FROM node_transfers WHERE transfer_id=$1"
@@ -741,14 +579,7 @@ pub(crate) async fn cancel_node_transfer(
     .await;
     let row = match row {
         Ok(row) => row,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let Some(row) = row else {
         return mutation_error(
@@ -767,20 +598,14 @@ pub(crate) async fn cancel_node_transfer(
         );
     }
     let cancelled_at = crate::auth::format_rfc3339(crate::auth::now_utc());
-    if sqlx::query("UPDATE node_transfers SET status='cancelled', cancelled_at=$1, updated_at=$2 WHERE transfer_id=$3 AND status='pending'")
+    if let Err(error) = sqlx::query("UPDATE node_transfers SET status='cancelled', cancelled_at=$1, updated_at=$2 WHERE transfer_id=$3 AND status='pending'")
         .bind(&cancelled_at)
         .bind(&cancelled_at)
         .bind(&transfer_id)
         .execute(&mut *tx)
         .await
-        .is_err()
     {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        );
+        return storage_failure(&state, &request_id.0, &error);
     }
     let audit_event_id = match crate::auth::insert_audit_event(
         &mut *tx,
@@ -797,14 +622,7 @@ pub(crate) async fn cancel_node_transfer(
     .await
     {
         Ok(value) => value,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let updated = NodeTransferRow {
         status: "cancelled".to_owned(),
@@ -812,13 +630,8 @@ pub(crate) async fn cancel_node_transfer(
         updated_at: cancelled_at,
         ..row
     };
-    if tx.commit().await.is_err() {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        );
+    if let Err(error) = tx.commit().await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     state
         .admin_realtime()

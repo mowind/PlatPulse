@@ -78,12 +78,7 @@ pub(crate) async fn admin_enrollment_token(
             })
             .into_response(),
         ),
-        Err(_) => mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        ),
+        Err(error) => storage_failure(&state, &request_id.0, &error),
     }
 }
 
@@ -151,14 +146,7 @@ pub(crate) async fn admin_recovery_token(
     .await
     {
         Ok(epoch) => epoch,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let Some(agent_epoch) = epoch else {
         return mutation_error(
@@ -194,11 +182,14 @@ pub(crate) async fn admin_recovery_token(
             "agent_not_found",
             "agent not found",
         ),
+        Err(crate::enrollment::RecoveryError::Database(error)) => {
+            storage_failure(&state, &request_id.0, &error)
+        }
         Err(_) => mutation_error(
             &request_id.0,
             StatusCode::SERVICE_UNAVAILABLE,
             "unavailable",
-            "server database is unavailable",
+            "Server database is unavailable",
         ),
     }
 }
@@ -301,11 +292,14 @@ pub(crate) async fn admin_rotate_credential(
             "agent_not_found",
             "agent not found",
         ),
+        Err(crate::enrollment::RotationError::Database(error)) => {
+            storage_failure(&state, &request_id.0, &error)
+        }
         Err(_) => mutation_error(
             &request_id.0,
             StatusCode::SERVICE_UNAVAILABLE,
             "unavailable",
-            "server database is unavailable",
+            "Server database is unavailable",
         ),
     }
 }
@@ -366,12 +360,9 @@ pub(crate) async fn admin_revoke_credential(
             "credential_already_revoked",
             "credential is already revoked",
         ),
-        Err(_) => mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        ),
+        Err(crate::enrollment::RevokeError::Database(error)) => {
+            storage_failure(&state, &request_id.0, &error)
+        }
     }
 }
 
@@ -410,22 +401,23 @@ pub(crate) async fn admin_agent_audit(
     Extension(_session): Extension<crate::http::AuthenticatedSession>,
     Extension(request_id): Extension<crate::http::RequestId>,
 ) -> Response {
-    let agent_exists = sqlx::query_scalar::<_, String>(
+    match sqlx::query_scalar::<_, String>(
         "SELECT agent_id FROM agents WHERE agent_id = $1 AND deleted_at IS NULL",
     )
     .bind(&agent_id)
     .fetch_optional(state.db().pool())
     .await
-    .ok()
-    .flatten()
-    .is_some();
-    if !agent_exists {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::NOT_FOUND,
-            "agent_not_found",
-            "agent not found",
-        );
+    {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::NOT_FOUND,
+                "agent_not_found",
+                "agent not found",
+            );
+        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     }
     let rows = sqlx::query_as::<_, (i64, String, Option<String>, String, Option<String>)>(
         "SELECT a.audit_event_id, a.event_kind, u.username, a.created_at, a.after_json
@@ -435,8 +427,11 @@ pub(crate) async fn admin_agent_audit(
     )
     .bind(&agent_id)
     .fetch_all(state.db().pool())
-    .await
-    .unwrap_or_default();
+    .await;
+    let rows = match rows {
+        Ok(rows) => rows,
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
+    };
     Json(AgentAuditResponse {
         agent_id,
         items: rows
@@ -701,5 +696,49 @@ mod tests {
             "every lifecycle audit row names the Owner actor with redacted details"
         );
     }
+
+    #[tokio::test]
+    async fn admin_agent_audit_reports_storage_failures_as_unavailable() {
+        let (_dir, state) = lifecycle_state().await;
+
+        sqlx::query("ALTER TABLE agents RENAME TO agents_unreadable")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let response = admin_agent_audit(
+            State(state.clone()),
+            Path("agent-lifecycle-test".to_owned()),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let value: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(value["error"]["code"], "unavailable", "{value}");
+
+        sqlx::query("ALTER TABLE agents_unreadable RENAME TO agents")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE audit_events")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let response = admin_agent_audit(
+            State(state.clone()),
+            Path("agent-lifecycle-test".to_owned()),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let value: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(value["error"]["code"], "unavailable", "{value}");
+    }
+
     // ---- Node inventory, metadata, and Network Registry (issue #45) ----
 }

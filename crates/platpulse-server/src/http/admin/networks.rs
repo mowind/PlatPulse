@@ -42,14 +42,7 @@ pub(super) async fn admin_networks(
     .await;
     let rows = match rows {
         Ok(rows) => rows,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     Json(
         rows.into_iter()
@@ -159,14 +152,7 @@ pub(super) async fn admin_network_detail(
         mismatched_node_count,
     )) = (match row {
         Ok(row) => row,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     })
     else {
         return mutation_error(
@@ -184,14 +170,7 @@ pub(super) async fn admin_network_detail(
     .await;
     let nodes = match nodes {
         Ok(nodes) => nodes,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let mut projected = Vec::with_capacity(nodes.len());
     for (node_id, agent_id, node_display_name, lifecycle, visibility) in nodes {
@@ -207,7 +186,7 @@ pub(super) async fn admin_network_detail(
         .await
         {
             Ok(assessed) => assessed,
-            Err(_) => return diagnostics_unavailable(&request_id),
+            Err(error) => return storage_failure(&state, &request_id.0, &error),
         };
         let diagnostic = assessed.diagnostic;
         projected.push(AdminNetworkNode {
@@ -317,14 +296,7 @@ pub(crate) async fn create_network(
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let insert = sqlx::query(
         "INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
@@ -351,12 +323,7 @@ pub(crate) async fn create_network(
                 "the Network key is already registered",
             );
         }
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        );
+        return storage_failure(&state, &request_id.0, &error);
     }
     let audit = serde_json::json!({
         "network_key": key,
@@ -366,7 +333,7 @@ pub(crate) async fn create_network(
         "p2p_network_id": body.p2p_network_id,
         "address_hrp": body.address_hrp,
     });
-    if crate::auth::insert_audit_event(
+    if let Err(error) = crate::auth::insert_audit_event(
         &mut *tx,
         Some(&principal.0.user_id),
         "network_created",
@@ -375,15 +342,11 @@ pub(crate) async fn create_network(
         Some(&audit),
     )
     .await
-    .is_err()
-        || tx.commit().await.is_err()
     {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        );
+        return storage_failure(&state, &request_id.0, &error);
+    }
+    if let Err(error) = tx.commit().await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     state
         .admin_realtime()
@@ -419,7 +382,7 @@ pub struct NetworkUpdateRequest {
     tag = "admin",
     params(("network_key" = String, Path, description = "Registered Network key")),
     request_body = NetworkUpdateRequest,
-    responses((status = 200, body = NetworkResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody))
+    responses((status = 200, body = NetworkResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
 )]
 pub(crate) async fn update_network(
     State(state): State<AppState>,
@@ -457,14 +420,7 @@ pub(crate) async fn update_network(
     let Some((current_name, current_genesis, current_chain, current_p2p, current_hrp)) =
         (match existing {
             Ok(row) => row,
-            Err(_) => {
-                return mutation_error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "server database is unavailable",
-                );
-            }
+            Err(error) => return storage_failure(&state, &request_id.0, &error),
         })
     else {
         return mutation_error(
@@ -524,16 +480,9 @@ pub(crate) async fn update_network(
     let changed_at = crate::auth::format_rfc3339(crate::auth::now_utc());
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
-    if sqlx::query(
+    if let Err(error) = sqlx::query(
         "UPDATE networks SET display_name = $1, genesis_hash = $2, chain_id = $3, p2p_network_id = $4, address_hrp = $5, updated_at = $6 WHERE network_key = $7",
     )
     .bind(&next_name)
@@ -545,14 +494,8 @@ pub(crate) async fn update_network(
     .bind(&network_key)
     .execute(&mut *tx)
     .await
-    .is_err()
     {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        );
+        return storage_failure(&state, &request_id.0, &error);
     }
     let before_audit = serde_json::json!({
         "display_name": current_name,
@@ -568,7 +511,7 @@ pub(crate) async fn update_network(
         "p2p_network_id": next_p2p,
         "address_hrp": next_hrp,
     });
-    if crate::auth::insert_audit_change(
+    if let Err(error) = crate::auth::insert_audit_change(
         &mut *tx,
         Some(&principal.0.user_id),
         "network_updated",
@@ -578,15 +521,11 @@ pub(crate) async fn update_network(
         Some(&after_audit),
     )
     .await
-    .is_err()
-        || tx.commit().await.is_err()
     {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        );
+        return storage_failure(&state, &request_id.0, &error);
+    }
+    if let Err(error) = tx.commit().await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     state
         .admin_realtime()

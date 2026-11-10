@@ -181,12 +181,7 @@ pub(crate) async fn admin_node_purge_preview(
             "not_found",
             "resource not found",
         ),
-        Err(_) => mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        ),
+        Err(error) => storage_failure(&state, &request_id.0, &error),
     }
 }
 
@@ -274,11 +269,6 @@ pub(crate) async fn purge_node(
             "not_found",
             "resource not found",
         ),
-        Err(_) => mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        ),
+        Err(error) => storage_failure(&state, &request_id.0, &error),
     }
 }

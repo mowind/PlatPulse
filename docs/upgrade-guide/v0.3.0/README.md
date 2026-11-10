@@ -38,6 +38,12 @@ v0.3.0 adds PostgreSQL as an opt-in Server Storage Backend ([ADR 0013](../../adr
 - **Who is affected:** API clients that read a Node's `freshness`, as an instant or as a `current`/`stale`/`unknown` word. The bundled WebUI is updated.
 - **Action:** read `currency` for the state (`never_observed` where `freshness` said `unknown`) and the as-of instant for the time.
 
+### Admin storage failures answer 503 (#413)
+
+- **What changed:** an Admin request that fails on a database read or write now answers 503 with one of two codes: `storage_conflict` for a unique or check constraint violation, or `unavailable` for any other storage failure. Both messages are fixed ("Server storage rejected the change" / "Server database is unavailable"), the failure is logged at `error` under the request id, and a failed existence read no longer answers 404 or a validation error. Admin diagnostics routes that answered 500 on a database read now answer 503. A `password`-hashing failure, previously mislabelled as a database outage, now answers 500 `internal_error`.
+- **Who is affected:** API clients, scripts or dashboards that branch on the HTTP status or error code of an Admin mutation or diagnostics read.
+- **Action:** treat 503 `storage_conflict` and 503 `unavailable` as a server-side storage failure, not as a missing resource. A mutation answered 503 `unavailable` may already have committed when a post-commit read failed, so reload the resource before retrying.
+
 ## Schema migrations
 
 | | v0.2.0 | v0.3.0 |
@@ -91,7 +97,7 @@ No path was removed or renamed in `docs/openapi/openapi.json`; the only removed 
 Behaviour changes visible to API clients (no action unless you depend on the old behaviour):
 
 - **Freshness follows observation time** (fc2d3c7, ADR 0014). A Node's currency is now judged from the skew-corrected time each observation was taken, not the Server receipt time. While an Agent replays a Durable Spool backlog its Nodes show as Stale instead of "N blocks behind", and a Stale Node is not evaluated by head-lag alerts.
-- **One Node Health Summary for Home and Admin** (#345). Public and Admin derive Health from the same rules, so the same Node reads the same `health` and `health_reason` on both. Stale evidence now makes a Node Unknown before any failure it carries (`observations are stale; last RPC observation failed`); Admin now counts a failed process observation and a Network identity mismatch, and Home shows a mismatched Node as Unknown. `health_reason` wording changed to name observations (`RPC observation failed`, `Node is awaiting its first accepted observation`). Admin diagnostics routes answer 500 instead of empty or partial data when a database read fails.
+- **One Node Health Summary for Home and Admin** (#345). Public and Admin derive Health from the same rules, so the same Node reads the same `health` and `health_reason` on both. Stale evidence now makes a Node Unknown before any failure it carries (`observations are stale; last RPC observation failed`); Admin now counts a failed process observation and a Network identity mismatch, and Home shows a mismatched Node as Unknown. `health_reason` wording changed to name observations (`RPC observation failed`, `Node is awaiting its first accepted observation`). Admin diagnostics routes answer 503 instead of empty, partial or 500 data when a database read fails.
 - **No Session idle timeout** (809dec2, #259). A human Session no longer ends after 12 hours without activity; it ends only at its 7-day absolute lifetime (`expires_at`), on sign-out or on revocation.
 
 ## New optional features

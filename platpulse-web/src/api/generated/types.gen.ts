@@ -5187,7 +5187,7 @@ export type DiagnosticsData = {
 };
 
 export type DiagnosticsErrors = {
-    500: ApiErrorBody;
+    503: ApiErrorBody;
 };
 
 export type DiagnosticsError = DiagnosticsErrors[keyof DiagnosticsErrors];
@@ -5236,7 +5236,7 @@ export type AdminAgentDetailData = {
 export type AdminAgentDetailErrors = {
     403: ApiErrorBody;
     404: ApiErrorBody;
-    500: ApiErrorBody;
+    503: ApiErrorBody;
 };
 
 export type AdminAgentDetailError = AdminAgentDetailErrors[keyof AdminAgentDetailErrors];
@@ -6338,6 +6338,7 @@ export type UpdateNetworkErrors = {
     400: ApiErrorBody;
     403: ApiErrorBody;
     404: ApiErrorBody;
+    503: ApiErrorBody;
 };
 
 export type UpdateNetworkError = UpdateNetworkErrors[keyof UpdateNetworkErrors];
@@ -6379,7 +6380,7 @@ export type AdminNodesData = {
 };
 
 export type AdminNodesErrors = {
-    500: ApiErrorBody;
+    503: ApiErrorBody;
 };
 
 export type AdminNodesError = AdminNodesErrors[keyof AdminNodesErrors];
@@ -6407,7 +6408,7 @@ export type AdminNodeDetailData = {
 
 export type AdminNodeDetailErrors = {
     404: ApiErrorBody;
-    500: ApiErrorBody;
+    503: ApiErrorBody;
 };
 
 export type AdminNodeDetailError = AdminNodeDetailErrors[keyof AdminNodeDetailErrors];
@@ -7267,6 +7268,7 @@ export type OverviewData = {
 
 export type OverviewErrors = {
     500: ApiErrorBody;
+    503: ApiErrorBody;
 };
 
 export type OverviewError = OverviewErrors[keyof OverviewErrors];

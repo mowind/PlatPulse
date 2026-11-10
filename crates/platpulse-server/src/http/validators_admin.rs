@@ -4,7 +4,7 @@
 //! consensus membership, provider values, endpoints, and raw diagnostics are
 //! not accepted as an implicit relationship source.
 
-use super::admin::{mutation_error, mutation_guard_ok};
+use super::admin::{mutation_error, mutation_guard_ok, storage_failure};
 use super::{AppState, AuthenticatedSession, RequestId};
 use crate::validator::{
     self, NodeValidatorLinkRecord, ValidatorCounterHistoryRecord, ValidatorError,
@@ -314,8 +314,16 @@ pub struct ValidatorLinkListQuery {
     pub node_id: Option<String>,
 }
 
-pub(crate) fn error_response(request_id: &str, error: ValidatorError) -> Response {
+#[track_caller]
+pub(crate) fn error_response(
+    state: &AppState,
+    request_id: &str,
+    error: ValidatorError,
+) -> Response {
     let (status, code) = match &error {
+        ValidatorError::Database(failure) => {
+            return storage_failure(state, request_id, failure);
+        }
         ValidatorError::NetworkNotFound
         | ValidatorError::ValidatorNotFound
         | ValidatorError::NodeNotFound
@@ -338,14 +346,10 @@ pub(crate) fn error_response(request_id: &str, error: ValidatorError) -> Respons
         | ValidatorError::InvalidProviderObservation(_)
         | ValidatorError::InvalidTimezone(_)
         | ValidatorError::InvalidTrendWindow(_) => (StatusCode::BAD_REQUEST, "invalid_request"),
-        ValidatorError::Database(_) | ValidatorError::Alert(_) => {
-            (StatusCode::SERVICE_UNAVAILABLE, "unavailable")
-        }
+        ValidatorError::Alert(_) => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
     };
-    let message = match error {
-        ValidatorError::Database(_) | ValidatorError::Alert(_) => {
-            "server database is unavailable".to_owned()
-        }
+    let message = match &error {
+        ValidatorError::Alert(_) => "Server database is unavailable".to_owned(),
         error => error.to_string(),
     };
     (
@@ -619,12 +623,12 @@ pub(crate) async fn admin_validators(
             for record in records {
                 match validator_dto(&state, record).await {
                     Ok(value) => result.push(value),
-                    Err(error) => return error_response(&request_id.0, error),
+                    Err(error) => return error_response(&state, &request_id.0, error),
                 }
             }
             Json(result).into_response()
         }
-        Err(error) => error_response(&request_id.0, error),
+        Err(error) => error_response(&state, &request_id.0, error),
     }
 }
 
@@ -642,24 +646,24 @@ pub(crate) async fn admin_validator_detail(
 ) -> Response {
     let Some(record) = (match validator::get_validator(&state.database(), &validator_id).await {
         Ok(value) => value,
-        Err(error) => return error_response(&request_id.0, error),
+        Err(error) => return error_response(&state, &request_id.0, error),
     }) else {
-        return error_response(&request_id.0, ValidatorError::ValidatorNotFound);
+        return error_response(&state, &request_id.0, ValidatorError::ValidatorNotFound);
     };
     let validator = match validator_dto(&state, record).await {
         Ok(value) => value,
-        Err(error) => return error_response(&request_id.0, error),
+        Err(error) => return error_response(&state, &request_id.0, error),
     };
     let records =
         match validator::list_links(&state.database(), None, Some(&validator_id), None).await {
             Ok(value) => value,
-            Err(error) => return error_response(&request_id.0, error),
+            Err(error) => return error_response(&state, &request_id.0, error),
         };
     let mut links = Vec::with_capacity(records.len());
     for record in records {
         match link_dto(&state, record).await {
             Ok(value) => links.push(value),
-            Err(error) => return error_response(&request_id.0, error),
+            Err(error) => return error_response(&state, &request_id.0, error),
         }
     }
     Json(ValidatorDetail { validator, links }).into_response()
@@ -679,12 +683,12 @@ pub(crate) async fn admin_validator_link_detail(
 ) -> Response {
     let record = match validator::get_link(&state.database(), &link_id).await {
         Ok(Some(value)) => value,
-        Ok(None) => return error_response(&request_id.0, ValidatorError::LinkNotFound),
-        Err(error) => return error_response(&request_id.0, error),
+        Ok(None) => return error_response(&state, &request_id.0, ValidatorError::LinkNotFound),
+        Err(error) => return error_response(&state, &request_id.0, error),
     };
     match link_dto(&state, record).await {
         Ok(value) => Json(value).into_response(),
-        Err(error) => error_response(&request_id.0, error),
+        Err(error) => error_response(&state, &request_id.0, error),
     }
 }
 
@@ -750,13 +754,13 @@ pub(crate) async fn admin_validator_links(
     .await
     {
         Ok(value) => value,
-        Err(error) => return error_response(&request_id.0, error),
+        Err(error) => return error_response(&state, &request_id.0, error),
     };
     let mut result = Vec::with_capacity(records.len());
     for record in records {
         match link_dto(&state, record).await {
             Ok(value) => result.push(value),
-            Err(error) => return error_response(&request_id.0, error),
+            Err(error) => return error_response(&state, &request_id.0, error),
         }
     }
     Json(result).into_response()
@@ -776,7 +780,7 @@ pub(crate) async fn admin_node_validator_links(
 ) -> Response {
     let records = match validator::list_links(&state.database(), Some(&node_id), None, None).await {
         Ok(value) => value,
-        Err(error) => return error_response(&request_id.0, error),
+        Err(error) => return error_response(&state, &request_id.0, error),
     };
     if records.is_empty() {
         match sqlx::query_scalar::<_, i64>("SELECT 1 FROM nodes WHERE node_id = $1")
@@ -785,9 +789,9 @@ pub(crate) async fn admin_node_validator_links(
             .await
         {
             Ok(Some(_)) => {}
-            Ok(None) => return error_response(&request_id.0, ValidatorError::NodeNotFound),
+            Ok(None) => return error_response(&state, &request_id.0, ValidatorError::NodeNotFound),
             Err(error) => {
-                return error_response(&request_id.0, ValidatorError::Database(error));
+                return storage_failure(&state, &request_id.0, &error);
             }
         }
     }
@@ -795,7 +799,7 @@ pub(crate) async fn admin_node_validator_links(
     for record in records {
         match link_dto(&state, record).await {
             Ok(value) => result.push(value),
-            Err(error) => return error_response(&request_id.0, error),
+            Err(error) => return error_response(&state, &request_id.0, error),
         }
     }
     Json(result).into_response()
@@ -891,9 +895,9 @@ pub(crate) async fn admin_validator_history(
 ) -> Response {
     let Some(record) = (match validator::get_validator(&state.database(), &validator_id).await {
         Ok(value) => value,
-        Err(error) => return error_response(&request_id.0, error),
+        Err(error) => return error_response(&state, &request_id.0, error),
     }) else {
-        return error_response(&request_id.0, ValidatorError::ValidatorNotFound);
+        return error_response(&state, &request_id.0, ValidatorError::ValidatorNotFound);
     };
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
     match admin_history_entries(&state, &validator_id, limit).await {
@@ -903,7 +907,7 @@ pub(crate) async fn admin_validator_history(
             entries,
         })
         .into_response(),
-        Err(error) => error_response(&request_id.0, error),
+        Err(error) => error_response(&state, &request_id.0, error),
     }
 }
 
@@ -922,15 +926,14 @@ pub(crate) async fn admin_validator_analytics(
 ) -> Response {
     let Some(insight) = (match validator::load_insight(&state.database(), &validator_id).await {
         Ok(value) => value,
-        Err(error) => return error_response(&request_id.0, error),
+        Err(error) => return error_response(&state, &request_id.0, error),
     }) else {
-        if validator::get_validator(&state.database(), &validator_id)
-            .await
-            .ok()
-            .flatten()
-            .is_none()
-        {
-            return error_response(&request_id.0, ValidatorError::ValidatorNotFound);
+        let existing = match validator::get_validator(&state.database(), &validator_id).await {
+            Ok(existing) => existing,
+            Err(error) => return error_response(&state, &request_id.0, error),
+        };
+        if existing.is_none() {
+            return error_response(&state, &request_id.0, ValidatorError::ValidatorNotFound);
         }
         return Json(AdminValidatorAnalyticsResponse {
             validator_id,
@@ -963,7 +966,7 @@ pub(crate) async fn admin_validator_analytics(
                 block_count: row.block_count,
             })
             .collect(),
-        Err(error) => return error_response(&request_id.0, error),
+        Err(error) => return error_response(&state, &request_id.0, error),
     };
     let monthly =
         match validator::list_monthly_aggregates(&state.database(), &validator_id, limit).await {
@@ -987,7 +990,7 @@ pub(crate) async fn admin_validator_analytics(
                     updated_at: row.updated_at,
                 })
                 .collect(),
-            Err(error) => return error_response(&request_id.0, error),
+            Err(error) => return error_response(&state, &request_id.0, error),
         };
     let freshness = validator::freshness(
         insight.last_good_received_at.as_deref(),
@@ -1031,7 +1034,7 @@ pub(crate) async fn admin_validator_identities(
                 .collect::<Vec<_>>(),
         )
         .into_response(),
-        Err(error) => error_response(&request_id.0, error),
+        Err(error) => error_response(&state, &request_id.0, error),
     }
 }
 
@@ -1223,8 +1226,10 @@ pub(crate) async fn admin_validator_trend(
 ) -> Response {
     let record = match validator::get_validator(state.db(), &validator_id).await {
         Ok(Some(record)) => record,
-        Ok(None) => return error_response(&request_id.0, ValidatorError::ValidatorNotFound),
-        Err(error) => return error_response(&request_id.0, error),
+        Ok(None) => {
+            return error_response(&state, &request_id.0, ValidatorError::ValidatorNotFound);
+        }
+        Err(error) => return error_response(&state, &request_id.0, error),
     };
     let request = validator::ValidatorTrendQuery {
         validator_id: validator_id.clone(),
@@ -1237,7 +1242,7 @@ pub(crate) async fn admin_validator_trend(
     let page = match validator::load_daily_trend(state.db(), &request, crate::auth::now_utc()).await
     {
         Ok(page) => page,
-        Err(error) => return error_response(&request_id.0, error),
+        Err(error) => return error_response(&state, &request_id.0, error),
     };
     let coverage = trend_coverage(&page).to_owned();
     let associations = page

@@ -128,7 +128,7 @@ pub struct GeoProviderMutationResponse {
 
 /// Build the Owner-only Geo diagnostic. Every value is computed from the
 /// selected provider only; a path or raw address never enters the DTO.
-async fn geo_diagnostic(state: &AppState) -> Option<GeoStatusDiagnostic> {
+async fn geo_diagnostic(state: &AppState) -> Result<GeoStatusDiagnostic, sqlx::Error> {
     let config = state.geo_config();
     let status = state.geo_status();
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
@@ -141,16 +141,13 @@ async fn geo_diagnostic(state: &AppState) -> Option<GeoStatusDiagnostic> {
     .bind(&now)
     .bind(&rebuild_before)
     .fetch_one(state.db().pool())
-    .await
-    .ok()?;
+    .await?;
     let last_success_at = sqlx::query_scalar::<_, Option<String>>(
         "SELECT MAX(last_success_at) FROM geo_location_cache WHERE provider = $1",
     )
     .bind(provider)
     .fetch_one(state.db().pool())
-    .await
-    .ok()
-    .flatten();
+    .await?;
     // The reported backlog is the whole queue, not the bounded batch one pass
     // is allowed to schedule.
     let pending_lookup_count = if config.provider == crate::geo::GeoProvider::Disabled {
@@ -158,8 +155,7 @@ async fn geo_diagnostic(state: &AppState) -> Option<GeoStatusDiagnostic> {
     } else {
         Some(
             crate::geo_backfill::pending_addresses(state.db().pool(), config.provider, &now, None)
-                .await
-                .ok()?
+                .await?
                 .len() as i64,
         )
     };
@@ -183,7 +179,7 @@ async fn geo_diagnostic(state: &AppState) -> Option<GeoStatusDiagnostic> {
                 .map(|profile| profile.disclosure.to_owned()),
         })
         .collect();
-    Some(GeoStatusDiagnostic {
+    Ok(GeoStatusDiagnostic {
         provider: config.provider.as_str().to_owned(),
         provider_label: config.provider.label().to_owned(),
         provider_generation: config.generation,
@@ -242,13 +238,8 @@ pub(crate) async fn admin_geo_status(
     Extension(request_id): Extension<crate::http::RequestId>,
 ) -> Response {
     match geo_diagnostic(&state).await {
-        Some(diagnostic) => Json(diagnostic).into_response(),
-        None => mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        ),
+        Ok(diagnostic) => Json(diagnostic).into_response(),
+        Err(error) => storage_failure(&state, &request_id.0, &error),
     }
 }
 
@@ -262,10 +253,8 @@ async fn record_geo_refresh_audit(
     principal: &crate::http::AuthenticatedSession,
     snapshot: &crate::geo_refresh::GeoRefreshSnapshot,
     started: bool,
-) -> Result<i64, ()> {
-    let mut tx = crate::database::begin(state.db().pool())
-        .await
-        .map_err(|_| ())?;
+) -> Result<i64, sqlx::Error> {
+    let mut tx = crate::database::begin(state.db().pool()).await?;
     let audit_event_id = crate::auth::insert_audit_change(
         &mut *tx,
         Some(&principal.0.user_id),
@@ -282,9 +271,8 @@ async fn record_geo_refresh_audit(
             "peer_records_in_scope": snapshot.peer_records_in_scope,
         })),
     )
-    .await
-    .map_err(|_| ())?;
-    tx.commit().await.map_err(|_| ())?;
+    .await?;
+    tx.commit().await?;
     Ok(audit_event_id)
 }
 
@@ -333,13 +321,8 @@ pub(crate) async fn trigger_geo_refresh(
             )
                 .into_response();
         }
-        Err(crate::geo_refresh::StartRefreshError::Database) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
+        Err(crate::geo_refresh::StartRefreshError::Database(error)) => {
+            return storage_failure(&state, &request_id.0, &error);
         }
     };
     let started = matches!(start, crate::geo_refresh::RefreshStart::Started(_));
@@ -350,18 +333,13 @@ pub(crate) async fn trigger_geo_refresh(
     let audit_event_id =
         match record_geo_refresh_audit(&state, &principal, &snapshot, started).await {
             Ok(audit_event_id) => audit_event_id,
-            Err(()) => {
+            Err(error) => {
                 // Nothing may resolve without its Audit Event. A prepared run is
                 // abandoned truthfully instead of being left "running" forever.
                 if let crate::geo_refresh::RefreshStart::Started(prepared) = start {
                     prepared.abandon(crate::geo_refresh::RefreshAbort::InternalError, &now);
                 }
-                return mutation_error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "server database is unavailable",
-                );
+                return storage_failure(&state, &request_id.0, &error);
             }
         };
     if let crate::geo_refresh::RefreshStart::Started(prepared) = start {
@@ -425,45 +403,25 @@ pub(crate) async fn update_geo_provider(
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     // The generation is advanced inside this transaction and read back from
     // the same statement, so two concurrent Owner changes can never persist
     // the same generation.
     let generation = match crate::geo::bump_provider_generation(&mut *tx, &now).await {
         Ok(generation) => generation,
-        Err(_) => {
+        Err(error) => {
             let _ = tx.rollback().await;
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
+            return storage_failure(&state, &request_id.0, &error);
         }
     };
     let selection = crate::geo::GeoSelection {
         provider,
         generation,
     };
-    if crate::geo::write_provider_selection(&mut *tx, selection, &now)
-        .await
-        .is_err()
-    {
+    if let Err(error) = crate::geo::write_provider_selection(&mut *tx, selection, &now).await {
         let _ = tx.rollback().await;
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        );
+        return storage_failure(&state, &request_id.0, &error);
     }
     let audit_event_id = match crate::auth::insert_audit_change(
         &mut *tx,
@@ -477,23 +435,13 @@ pub(crate) async fn update_geo_provider(
     .await
     {
         Ok(id) => id,
-        Err(_) => {
+        Err(error) => {
             let _ = tx.rollback().await;
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
+            return storage_failure(&state, &request_id.0, &error);
         }
     };
-    if tx.commit().await.is_err() {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        );
+    if let Err(error) = tx.commit().await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     state.apply_geo_provider(crate::geo::GeoSelection {
         provider,
@@ -510,17 +458,12 @@ pub(crate) async fn update_geo_provider(
         .publish(PublicResource::Geo, None::<String>);
 
     match geo_diagnostic(&state).await {
-        Some(diagnostic) => Json(GeoProviderMutationResponse {
+        Ok(diagnostic) => Json(GeoProviderMutationResponse {
             geo: diagnostic,
             audit_event_id,
         })
         .into_response(),
-        None => mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        ),
+        Err(error) => storage_failure(&state, &request_id.0, &error),
     }
 }
 

@@ -141,26 +141,12 @@ pub(super) async fn admin_node_history(
                 "resource not found",
             );
         }
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     }
     let raw_retention_days =
         match crate::retention::raw_block_summary_retention_days(state.db().pool()).await {
             Ok(days) => days,
-            Err(_) => {
-                return mutation_error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "server database is unavailable",
-                );
-            }
+            Err(error) => return storage_failure(&state, &request_id.0, &error),
         };
     let cutoff = crate::auth::format_rfc3339(crate::retention::family_cutoff(
         crate::auth::now_utc(),
@@ -174,14 +160,7 @@ pub(super) async fn admin_node_history(
     .await;
     let oldest_raw = match oldest_raw {
         Ok(value) => value,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let has_history = sqlx::query_scalar::<_, Option<i64>>(
         "SELECT historical_high_watermark FROM block_history_state WHERE node_id=$1",
@@ -191,14 +170,7 @@ pub(super) async fn admin_node_history(
     .await;
     let has_history = match has_history {
         Ok(value) => value.flatten().is_some_and(|height| height > 0),
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let has_expired_raw = oldest_raw.as_ref().is_some_and(|value| value < &cutoff);
     let availability = (has_expired_raw || (oldest_raw.is_none() && has_history))
@@ -217,14 +189,7 @@ pub(super) async fn admin_node_history(
         .await;
     let rows = match rows {
         Ok(rows) => rows,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let mut rows = rows;
     rows.retain(|row| {
@@ -662,7 +627,7 @@ pub(super) async fn admin_node_metric_history(
     {
         Ok(Some(_)) => {}
         Ok(None) => return not_found_response(&request_id.0),
-        Err(_) => return unavailable_response(&request_id.0),
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     }
     // These series belong to the Node's own process and are stored under it, so
     // the answer says so: they are never the Host series of the Agent that owns
@@ -907,7 +872,7 @@ pub(super) async fn admin_node_state_history(
     {
         Ok(Some(_)) => {}
         Ok(None) => return not_found_response(&request_id.0),
-        Err(_) => return unavailable_response(&request_id.0),
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     }
     // Recorded states describe the Node itself, so the answer says so: they are
     // never the Agent or Host history of the Agent that reported them
@@ -923,7 +888,6 @@ async fn state_history_response(
     node_id: &str,
     component: &str,
 ) -> Response {
-    let unavailable = || unavailable_response(request_id);
     let invalid_range = || {
         mutation_error(
             request_id,
@@ -935,7 +899,7 @@ async fn state_history_response(
     let retention_days =
         match crate::retention::observation_state_retention_days(state.db().pool()).await {
             Ok(days) => days,
-            Err(_) => return unavailable(),
+            Err(error) => return storage_failure(state, request_id, &error),
         };
     let now = crate::auth::now_utc();
     let to = match params.to.as_deref() {
@@ -1011,7 +975,7 @@ async fn state_history_response(
     .await
     {
         Ok(range) => range,
-        Err(_) => return unavailable(),
+        Err(error) => return storage_failure(state, request_id, &error),
     };
     let window_seconds = (effective_to - effective_from).whole_seconds().max(0);
     let entries = range
@@ -1258,15 +1222,15 @@ pub(super) async fn admin_agent_storage_mounts(
     // Server would have to invent.
     let mut snapshot = match crate::database::begin(state.db().pool()).await {
         Ok(snapshot) => snapshot,
-        Err(_) => return unavailable_response(&request_id.0),
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let coverage = match crate::metric_history::load_mount_coverage(&mut snapshot, &agent_id).await
     {
         Ok(coverage) => coverage,
-        Err(_) => return unavailable_response(&request_id.0),
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
-    if snapshot.commit().await.is_err() {
-        return unavailable_response(&request_id.0);
+    if let Err(error) = snapshot.commit().await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     // Every Host series is written from the one observation the Agent collected
     // for its Host, so the Agent has one cadence and it is measured once instead
@@ -1455,7 +1419,7 @@ pub(super) async fn admin_node_host_metric_history(
         {
             Ok(Some(agent_id)) => agent_id,
             Ok(None) => return not_found_response(&request_id.0),
-            Err(_) => return unavailable_response(&request_id.0),
+            Err(error) => return storage_failure(&state, &request_id.0, &error),
         };
     let dimension = params.dimension.clone().unwrap_or_default();
     let agent_scope_key = agent_id.clone();
@@ -1514,7 +1478,7 @@ async fn host_owner_exists(
     {
         Ok(Some(_)) => Ok(()),
         Ok(None) => Err(Box::new(not_found_response(request_id))),
-        Err(_) => Err(Box::new(unavailable_response(request_id))),
+        Err(error) => Err(Box::new(storage_failure(state, request_id, &error))),
     }
 }
 
@@ -1526,16 +1490,6 @@ pub(super) fn not_found_response(request_id: &str) -> Response {
         StatusCode::NOT_FOUND,
         "not_found",
         "resource not found",
-    )
-}
-
-/// The answer every metric-history route gives when the database cannot be read.
-pub(super) fn unavailable_response(request_id: &str) -> Response {
-    mutation_error(
-        request_id,
-        StatusCode::SERVICE_UNAVAILABLE,
-        "unavailable",
-        "server database is unavailable",
     )
 }
 
@@ -1565,7 +1519,6 @@ async fn metric_history_response(
     scope: crate::metric_history::SeriesScope<'_>,
     identity: MetricHistoryIdentity,
 ) -> Response {
-    let unavailable = || unavailable_response(request_id);
     let invalid_range = || {
         mutation_error(
             request_id,
@@ -1577,7 +1530,7 @@ async fn metric_history_response(
     let raw_retention_days =
         match crate::retention::metric_sample_retention_days(state.db().pool()).await {
             Ok(days) => days,
-            Err(_) => return unavailable(),
+            Err(error) => return storage_failure(state, request_id, &error),
         };
     let now = crate::auth::now_utc();
     let to = match params.to.as_deref() {
@@ -1651,7 +1604,7 @@ async fn metric_history_response(
     .await
     {
         Ok(range) => range,
-        Err(_) => return unavailable(),
+        Err(error) => return storage_failure(state, request_id, &error),
     };
     let window_seconds = (effective_to - effective_from).whole_seconds().max(0);
     let items = range

@@ -191,13 +191,8 @@ pub(super) fn error(
 /// (issue #179). Log the redacted error under its request id and keep a
 /// distinct code for a constraint violation.
 pub(super) fn storage_error(request_id: &str, operation: &str, failure: &sqlx::Error) -> Response {
-    let constraint = matches!(
-        failure,
-        sqlx::Error::Database(database)
-            if database.is_unique_violation() || database.is_check_violation()
-    );
     tracing::error!(error = %failure, "report ingestion storage error during {operation}");
-    if constraint {
+    if crate::database::is_constraint_violation(failure) {
         return error(
             request_id,
             StatusCode::SERVICE_UNAVAILABLE,

@@ -94,7 +94,7 @@ fn severity_rank(severity: AttentionSeverity) -> u8 {
     get,
     path = "/api/admin/v1/overview",
     tag = "admin",
-    responses((status = 200, description = "Server-owned attention queue and overview summary", body = AdminOverview), (status = 500, body = crate::http::ApiErrorBody))
+    responses((status = 200, description = "Server-owned attention queue and overview summary", body = AdminOverview), (status = 500, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
 )]
 pub(crate) async fn overview(
     State(state): State<AppState>,
@@ -112,13 +112,8 @@ pub(crate) async fn overview(
     .await
     {
         Ok(agents) => agents,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
+        Err(error) => {
+            return storage_failure(&state, &request_id.0, &error);
         }
     };
     let mut agent_summary = AgentSummary {
@@ -138,25 +133,15 @@ pub(crate) async fn overview(
         // boundary, which drops acknowledged occurrences (issue #172).
         match crate::attention::evaluate_agent(state.db().pool(), agent).await {
             Ok(items) => attention.extend(items),
-            Err(_) => {
-                return mutation_error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "server database is unavailable",
-                );
+            Err(error) => {
+                return storage_failure(&state, &request_id.0, &error);
             }
         }
     }
     let network_summary = match overview_network_summary(state.db().pool()).await {
         Ok(summary) => summary,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
+        Err(error) => {
+            return storage_failure(&state, &request_id.0, &error);
         }
     };
     let rows = match sqlx::query_as::<_, (String, String, Option<String>, String, i64, String, String)>(
@@ -166,13 +151,8 @@ pub(crate) async fn overview(
     .await
     {
         Ok(rows) => rows,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
+        Err(error) => {
+            return storage_failure(&state, &request_id.0, &error);
         }
     };
     let mut node_summary = NodeSummary {
@@ -205,7 +185,7 @@ pub(crate) async fn overview(
         .await
         {
             Ok(assessed) => assessed,
-            Err(_) => return diagnostics_unavailable(&request_id),
+            Err(error) => return storage_failure(&state, &request_id.0, &error),
         };
         if lifecycle != "active" {
             node_summary.retired += 1;
@@ -225,7 +205,7 @@ pub(crate) async fn overview(
             .await;
             let observed_at = match observed_at {
                 Ok(observed_at) => observed_at.flatten(),
-                Err(_) => return diagnostics_unavailable(&request_id),
+                Err(error) => return storage_failure(&state, &request_id.0, &error),
             };
             attention.push(AttentionItem {
                 id: format!("node_identity_mismatch:node:{node_id}"),
@@ -292,7 +272,7 @@ pub(crate) async fn overview(
             .await
             {
                 Ok(instant) => instant.or(observed_at.clone()),
-                Err(_) => return diagnostics_unavailable(&request_id),
+                Err(error) => return storage_failure(&state, &request_id.0, &error),
             };
             attention.push(AttentionItem {
                 id: format!("node_resync:node:{node_id}"),

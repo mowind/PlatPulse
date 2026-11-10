@@ -1362,7 +1362,7 @@ pub(super) struct AgentAdminRow {
     get,
     path = "/api/admin/v1/agents",
     tag = "admin",
-    responses((status = 200, description = "Owner-only Agent and Node diagnostics", body = [AgentDiagnostic]), (status = 500, body = crate::http::ApiErrorBody))
+    responses((status = 200, description = "Owner-only Agent and Node diagnostics", body = [AgentDiagnostic]), (status = 503, body = crate::http::ApiErrorBody))
 )]
 pub(super) async fn diagnostics(
     State(state): State<AppState>,
@@ -1377,27 +1377,16 @@ pub(super) async fn diagnostics(
     .await;
     let agents = match agents {
         Ok(agents) => agents,
-        Err(_) => return diagnostics_unavailable(&request_id),
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let mut result = Vec::with_capacity(agents.len());
     for row in agents {
         match agent_diagnostic(&state, row).await {
             Ok(diagnostic) => result.push(diagnostic),
-            Err(_) => return diagnostics_unavailable(&request_id),
+            Err(error) => return storage_failure(&state, &request_id.0, &error),
         }
     }
     Json(result).into_response()
-}
-
-/// A diagnostics read the database refused: the Owner sees a failed request,
-/// never a diagnostic silently assembled from missing rows.
-pub(super) fn diagnostics_unavailable(request_id: &crate::http::RequestId) -> Response {
-    mutation_error(
-        &request_id.0,
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "unavailable",
-        "server database is unavailable",
-    )
 }
 
 /// Build one Server-owned Agent diagnostic with identity, liveness,

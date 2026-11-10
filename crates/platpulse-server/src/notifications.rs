@@ -419,7 +419,11 @@ pub async fn record_test_event(
 pub enum RetryError {
     NotFound,
     AlreadyQueued,
-    NotRetryable { state: String },
+    NotRetryable {
+        state: String,
+    },
+    /// The Delivery read or re-arm failed in storage.
+    Database(sqlx::Error),
 }
 
 /// Manual Owner retry: re-arms an existing Delivery for the worker. It
@@ -437,7 +441,7 @@ pub async fn rearm_delivery(
             .bind(delivery_id)
             .fetch_optional(&mut *executor)
             .await
-            .map_err(|_| RetryError::NotFound)?;
+            .map_err(RetryError::Database)?;
     let Some(state) = current else {
         return Err(RetryError::NotFound);
     };
@@ -456,10 +460,10 @@ pub async fn rearm_delivery(
     .bind(&state)
     .execute(&mut *executor)
     .await
-    .map_err(|_| RetryError::NotFound)?;
+    .map_err(RetryError::Database)?;
     load_delivery(executor, delivery_id)
         .await
-        .map_err(|_| RetryError::NotFound)?
+        .map_err(RetryError::Database)?
         .ok_or(RetryError::NotFound)
 }
 
@@ -1002,21 +1006,21 @@ async fn replay_recorded_test_request(
 ) -> Result<TestSendOutcome, TestSendError> {
     let mut tx = crate::database::begin(state.db().pool())
         .await
-        .map_err(|_| TestSendError::Unavailable)?;
+        .map_err(TestSendError::Database)?;
     let existing = load_notification_request(&mut tx, request_id, now)
         .await
-        .map_err(|_| TestSendError::Unavailable)?
-        .ok_or(TestSendError::Unavailable)?;
+        .map_err(TestSendError::Database)?
+        .ok_or(TestSendError::MissingRecord)?;
     if existing.intent_fingerprint != fingerprint {
         let _ = tx.rollback().await;
         return Err(TestSendError::RequestConflict);
     }
     let delivery = load_delivery(&mut tx, &existing.delivery_id)
         .await
-        .map_err(|_| TestSendError::Unavailable)?
-        .ok_or(TestSendError::Unavailable)?;
-    let event_id = existing.event_id.ok_or(TestSendError::Unavailable)?;
-    tx.commit().await.map_err(|_| TestSendError::Unavailable)?;
+        .map_err(TestSendError::Database)?
+        .ok_or(TestSendError::MissingRecord)?;
+    let event_id = existing.event_id.ok_or(TestSendError::MissingRecord)?;
+    tx.commit().await.map_err(TestSendError::Database)?;
     Ok(TestSendOutcome {
         event_id,
         delivery,
@@ -1065,14 +1069,14 @@ pub async fn send_test_delivery(
     let fingerprint = request_intent_fingerprint("test", "telegram");
     let mut tx = crate::database::begin(state.db().pool())
         .await
-        .map_err(|_| TestSendError::Unavailable)?;
+        .map_err(TestSendError::Database)?;
     prune_expired_notification_requests(&mut tx, now)
         .await
-        .map_err(|_| TestSendError::Unavailable)?;
+        .map_err(TestSendError::Database)?;
     // Same request id: same Server command result, or an explicit conflict.
     if load_notification_request(&mut tx, request_id, now)
         .await
-        .map_err(|_| TestSendError::Unavailable)?
+        .map_err(TestSendError::Database)?
         .is_some()
     {
         let _ = tx.rollback().await;
@@ -1080,7 +1084,7 @@ pub async fn send_test_delivery(
     }
     let last_test = last_test_request_created_at(&mut tx, request_id)
         .await
-        .map_err(|_| TestSendError::Unavailable)?;
+        .map_err(TestSendError::Database)?;
     if let Some(retry_after_seconds) =
         cooldown_remaining_seconds(last_test.as_deref(), now, channels.test_cooldown_seconds)
     {
@@ -1091,13 +1095,13 @@ pub async fn send_test_delivery(
     }
     let event_id = record_test_event(&mut tx, severity, summary, channels, now)
         .await
-        .map_err(|_| TestSendError::Unavailable)?;
+        .map_err(TestSendError::Database)?;
     let delivery_id: String =
         sqlx::query_scalar("SELECT delivery_id FROM notification_deliveries WHERE event_id = $1")
             .bind(&event_id)
             .fetch_one(&mut *tx)
             .await
-            .map_err(|_| TestSendError::Unavailable)?;
+            .map_err(TestSendError::Database)?;
     // Audit acceptance in the same transaction as the Event and the ledger,
     // so an Audit-persistence failure fails the command before any send.
     let audit_event_id = match insert_audit_event(
@@ -1116,9 +1120,9 @@ pub async fn send_test_delivery(
     .await
     {
         Ok(id) => id,
-        Err(_) => {
+        Err(error) => {
             let _ = tx.rollback().await;
-            return Err(TestSendError::Unavailable);
+            return Err(TestSendError::Database(error));
         }
     };
     match insert_notification_request(
@@ -1139,12 +1143,12 @@ pub async fn send_test_delivery(
             let _ = tx.rollback().await;
             return replay_recorded_test_request(state, request_id, &fingerprint, now).await;
         }
-        Err(_) => {
+        Err(error) => {
             let _ = tx.rollback().await;
-            return Err(TestSendError::Unavailable);
+            return Err(TestSendError::Database(error));
         }
     }
-    tx.commit().await.map_err(|_| TestSendError::Unavailable)?;
+    tx.commit().await.map_err(TestSendError::Database)?;
     // The next command now sees this one's ledger row; the external send that
     // follows needs no serialization of its own.
     drop(channel_fence);
@@ -1157,7 +1161,7 @@ pub async fn send_test_delivery(
             .pool()
             .acquire()
             .await
-            .map_err(|_| TestSendError::Unavailable)?;
+            .map_err(TestSendError::Database)?;
         let result = sqlx::query(
             "UPDATE notification_deliveries SET state = 'in_flight', updated_at = $1 WHERE delivery_id = $2 AND state = 'pending'",
         )
@@ -1165,7 +1169,7 @@ pub async fn send_test_delivery(
         .bind(&delivery_id)
         .execute(&mut *conn)
         .await
-        .map_err(|_| TestSendError::Unavailable)?;
+        .map_err(TestSendError::Database)?;
         result.rows_affected() > 0
     };
     if claimed {
@@ -1175,17 +1179,17 @@ pub async fn send_test_delivery(
                 .pool()
                 .acquire()
                 .await
-                .map_err(|_| TestSendError::Unavailable)?;
+                .map_err(TestSendError::Database)?;
             load_event(&mut conn, &event_id)
                 .await
-                .map_err(|_| TestSendError::Unavailable)?
+                .map_err(TestSendError::Database)?
         }
         .expect("test event exists");
         let send_result = provider.send(telegram, &message_text(&event)).await;
         let attempted_at = format_rfc3339(now_utc());
         let mut tx = crate::database::begin(state.db().pool())
             .await
-            .map_err(|_| TestSendError::Unavailable)?;
+            .map_err(TestSendError::Database)?;
         match &send_result {
             Ok(()) => {
                 sqlx::query(
@@ -1196,7 +1200,7 @@ pub async fn send_test_delivery(
                 .bind(&attempted_at)
                 .execute(&mut *tx)
                 .await
-                .map_err(|_| TestSendError::Unavailable)?;
+                .map_err(TestSendError::Database)?;
                 sqlx::query(
                     "UPDATE notification_deliveries SET state = 'succeeded', attempt_count = 1, next_attempt_at = NULL, last_attempt_at = $1, last_result = 'ok', last_error_kind = NULL, retry_after_seconds = NULL, updated_at = $2 WHERE delivery_id = $3",
                 )
@@ -1205,7 +1209,7 @@ pub async fn send_test_delivery(
                 .bind(&delivery_id)
                 .execute(&mut *tx)
                 .await
-                .map_err(|_| TestSendError::Unavailable)?;
+                .map_err(TestSendError::Database)?;
             }
             Err(error) => {
                 sqlx::query(
@@ -1219,7 +1223,7 @@ pub async fn send_test_delivery(
                 .bind(error.retry_after_seconds())
                 .execute(&mut *tx)
                 .await
-                .map_err(|_| TestSendError::Unavailable)?;
+                .map_err(TestSendError::Database)?;
                 sqlx::query(
                     "UPDATE notification_deliveries SET state = 'failed', attempt_count = 1, next_attempt_at = NULL, last_attempt_at = $1, last_result = $2, last_error_kind = $3, retry_after_seconds = $4, updated_at = $5 WHERE delivery_id = $6",
                 )
@@ -1231,10 +1235,10 @@ pub async fn send_test_delivery(
                 .bind(&delivery_id)
                 .execute(&mut *tx)
                 .await
-                .map_err(|_| TestSendError::Unavailable)?;
+                .map_err(TestSendError::Database)?;
             }
         }
-        tx.commit().await.map_err(|_| TestSendError::Unavailable)?;
+        tx.commit().await.map_err(TestSendError::Database)?;
         state
             .admin_realtime()
             .publish(AdminResource::Notifications, None::<String>);
@@ -1244,10 +1248,10 @@ pub async fn send_test_delivery(
         .pool()
         .acquire()
         .await
-        .map_err(|_| TestSendError::Unavailable)?;
+        .map_err(TestSendError::Database)?;
     let delivery = load_delivery(&mut conn, &delivery_id)
         .await
-        .map_err(|_| TestSendError::Unavailable)?
+        .map_err(TestSendError::Database)?
         .expect("delivery exists");
     Ok(TestSendOutcome {
         event_id,
@@ -1261,7 +1265,10 @@ pub async fn send_test_delivery(
 pub enum TestSendError {
     NotConfigured,
     Disabled,
-    Unavailable,
+    /// A database operation behind the test send failed.
+    Database(sqlx::Error),
+    /// The request ledger held no row for the recorded request id.
+    MissingRecord,
     /// The Owner-supplied request id was missing or out of bounds.
     InvalidRequestId,
     /// The same request id was reused for a different command intent.
