@@ -216,13 +216,7 @@ async fn ingest_report<I: ReportInventory>(
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(db_error) => {
-            state.note_database_error(&db_error);
-            return error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
+            return storage_failure(&state, &request_id.0, "begin report transaction", &db_error);
         }
     };
 
@@ -266,34 +260,8 @@ async fn ingest_report<I: ReportInventory>(
         }
         Err(failure) => return failure.into_response(&state, &request_id.0),
     };
-    let Admission {
-        agent,
-        declared_revision,
-        inventory_hash,
-        inventory_unchanged,
-        inventory_revision: effective_inventory_revision,
-        nodes: mut node_admission,
-    } = admission;
     // The report is admitted from here on; only per-Node refusals remain.
-    if let Some(last) = agent.last_report_sequence
-        && parsed.boot_id.to_string() == agent.active_boot_id.as_deref().unwrap_or_default()
-        && parsed.report_sequence > (last as u64).saturating_add(1)
-    {
-        // Every statement in the ingestion transaction must succeed: a backend
-        // that aborts the transaction on a failed statement (ADR 0013) would
-        // otherwise fail the whole commit later with no clue why.
-        if let Err(failure) = sqlx::query("INSERT INTO report_sequence_gaps (agent_id, boot_id, from_sequence, to_sequence, created_at) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING")
-            .bind(&auth.agent_id)
-            .bind(parsed.boot_id.to_string())
-            .bind(last.saturating_add(1))
-            .bind(parsed.report_sequence.saturating_sub(1) as i64)
-            .bind(now().to_string())
-            .execute(&mut *tx)
-            .await
-        {
-            return storage_error(&request_id.0, "record report sequence gap", &failure);
-        }
-    }
+    let mut admission = admission;
     let now_text = now().to_string();
     // Every observation instant this Report contributes is read through the
     // stamp: the Report's own measured skew turns Agent-clock instants into
@@ -306,176 +274,31 @@ async fn ingest_report<I: ReportInventory>(
     );
     let capabilities =
         serde_json::to_string(&parsed.agent_capabilities).expect("capabilities serialize");
-    let mut ownership_contradiction = false;
-    for node in parsed.inventory.nodes() {
-        if !node_admission.admits(node.node_id) {
-            // Purged in the Network admission pass above.
-            continue;
-        }
-        let owner =
-            match sqlx::query_scalar::<_, String>("SELECT agent_id FROM nodes WHERE node_id = $1")
-                .bind(node.node_id.to_string())
-                .fetch_optional(&mut *tx)
-                .await
-            {
-                Ok(v) => v,
-                Err(_) => {
-                    return error(
-                        &request_id.0,
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "unavailable",
-                        "Server database is unavailable",
-                    );
-                }
-            };
-        if owner.is_some_and(|owner| owner != auth.agent_id) {
-            // The reporting Agent declared a Node owned by another Agent.
-            // Only a pending transfer targeting this Agent with a validated
-            // Network Identity may switch ownership (design §4.6); every
-            // other outcome keeps the source authoritative and is a
-            // contradiction worth a security event.
-            match resolve_node_transfer(&mut tx, &parsed, node, &auth.agent_id, &now_text).await {
-                Ok(TransferResolution::Completed) => {
-                    // Ownership switched atomically; this Node is no longer a
-                    // mismatch and its current/samples join this report.
-                }
-                Ok(TransferResolution::Unverified) => {
-                    // Legitimate in-flight declaration without an identity
-                    // probe yet: the transfer stays pending and the Node
-                    // entry stays rejected for this report.
-                    node_admission.refuse_ownership(node.node_id);
-                }
-                Ok(TransferResolution::NoTransfer)
-                | Ok(TransferResolution::NetworkKeyMismatch)
-                | Ok(TransferResolution::IdentityMismatch) => {
-                    node_admission.refuse_ownership(node.node_id);
-                    ownership_contradiction = true;
-                }
-                Err(_) => {
-                    return error(
-                        &request_id.0,
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "unavailable",
-                        "Server database is unavailable",
-                    );
-                }
-            }
-        }
-    }
-    // A non-owner declaration without a valid pending transfer (or with a
-    // rejected/contradicting transfer) is a security conflict: the source
-    // Agent's later submissions after a completed Transfer also land here
-    // and must be visible and auditable (design §4.6). The counter is
-    // recorded once per report together with block identity mismatches.
-    // Inventory is accepted as a complete set only after structural/network
-    // validation. Ownership-invalid Nodes reject only their own current and
-    // samples; they are not allowed to retire valid siblings.
-    // A Node is inadmissible when it belongs to another Agent or its ID was
-    // explicitly purged. Both are per-Node outcomes; the ordinary ownership
-    // rejection still records its security event below, while a purge is a
-    // stable, non-security disposition.
-    let accepted_inventory_ids = parsed
-        .inventory
-        .nodes()
-        .iter()
-        .filter(|node| node_admission.admits(node.node_id))
-        .map(|node| node.node_id.to_string())
-        .collect::<Vec<_>>();
-
-    // Equal content is unchanged; do not retire siblings or rewrite inventory
-    // ownership on a replay. A newly accepted declaration remains authoritative.
-    if !inventory_unchanged && parsed.inventory.nodes().is_empty() {
-        if sqlx::query("UPDATE nodes SET lifecycle='retired', updated_at=$1 WHERE agent_id=$2")
-            .bind(&now_text)
-            .bind(&auth.agent_id)
-            .execute(&mut *tx)
-            .await
-            .is_err()
-        {
-            return error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
-    } else if !inventory_unchanged && !accepted_inventory_ids.is_empty() {
-        let placeholders = std::iter::repeat_n("?", accepted_inventory_ids.len())
-            .collect::<Vec<_>>()
-            .join(",");
-        let sql = format!(
-            "UPDATE nodes SET lifecycle='retired', updated_at=? WHERE agent_id=? AND node_id NOT IN ({placeholders})"
-        );
-        let sql = crate::database::number_placeholders(&sql);
-        let mut query = sqlx::query(&sql).bind(&now_text).bind(&auth.agent_id);
-        for node_id in &accepted_inventory_ids {
-            query = query.bind(node_id);
-        }
-        if query.execute(&mut *tx).await.is_err() {
-            return error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
-    }
-    for node in parsed.inventory.nodes() {
-        if !node_admission.admits(node.node_id) {
-            continue;
-        }
-        let result = sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ($1, $2, $3, $4, $5, 'active', 'private', $6, $7, $8) ON CONFLICT(node_id) DO UPDATE SET network_key=excluded.network_key, display_name=COALESCE(nodes.display_name, excluded.display_name), rpc_endpoint=excluded.rpc_endpoint, lifecycle='active', inventory_revision=excluded.inventory_revision, updated_at=excluded.updated_at WHERE nodes.agent_id=excluded.agent_id")
-            .bind(node.node_id.to_string()).bind(&auth.agent_id).bind(node.network_key.as_str()).bind(&node.display_name).bind(node.rpc_endpoint.as_str()).bind(effective_inventory_revision as i64).bind(&now_text).bind(&now_text).execute(&mut *tx).await;
-        match result {
-            Ok(done) if done.rows_affected() == 1 => {}
-            // The projection only ever follows its owner: a row another Agent
-            // owns is never overwritten here, even if a writer got past the
-            // Node fence. The receipt is refused whole, so nothing of this
-            // decision commits and the Agent's retry is judged against the
-            // owner it can now see (issue #280).
-            Ok(_) => {
-                tracing::warn!(
-                    node_id = %node.node_id,
-                    "node owner changed between admission and projection; report refused for retry"
-                );
-                return error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "Node ownership changed while the report was admitted; retry the report",
-                );
-            }
-            Err(_) => {
-                return error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "Server database is unavailable",
-                );
-            }
-        }
-        // Record the relations the Server accepted with this Report (issue
-        // #221). A first Report opens the intervals; a change of reporting
-        // Agent or Network key closes the old interval and opens the new one,
-        // so history is never read from the Node's current columns.
-        if crate::relationships::record_relations(
-            &mut tx,
-            &node.node_id.to_string(),
-            &auth.agent_id,
-            node.network_key.as_str(),
-            &now_text,
-        )
+    let mut ownership_contradiction = match admission
+        .apply(&mut tx, &auth.agent_id, &parsed, &now_text)
         .await
-        .is_err()
-        {
+    {
+        Ok(InventoryApplied::Applied {
+            ownership_contradiction,
+        }) => ownership_contradiction,
+        Ok(InventoryApplied::OwnerChanged) => {
             return error(
                 &request_id.0,
                 StatusCode::SERVICE_UNAVAILABLE,
                 "unavailable",
-                "Server database is unavailable",
+                "Node ownership changed while the report was admitted; retry the report",
             );
         }
-    }
+        Err(failure) => return failure.into_response(&state, &request_id.0),
+    };
+    let Admission {
+        agent,
+        declared_revision,
+        inventory_hash,
+        inventory_unchanged,
+        inventory_revision: effective_inventory_revision,
+        nodes: node_admission,
+    } = admission;
     let mut projection_report = parsed.clone();
     projection_report
         .nodes
@@ -491,7 +314,12 @@ async fn ingest_report<I: ReportInventory>(
     if let Err(save_error) =
         save_current(&mut tx, &history, &projection_report, stamp, geo_provider).await
     {
-        return storage_error(&request_id.0, "save current observations", &save_error);
+        return storage_failure(
+            &state,
+            &request_id.0,
+            "save current observations",
+            &save_error,
+        );
     }
     // Every Block Summary is judged once and written as it is admitted; the
     // Receipt below reads the same outcomes (ADR 0011 decision 4).
@@ -501,7 +329,9 @@ async fn ingest_report<I: ReportInventory>(
     .await
     {
         Ok(admission) => admission,
-        Err(failure) => return storage_error(&request_id.0, "admit block history", &failure),
+        Err(failure) => {
+            return storage_failure(&state, &request_id.0, "admit block history", &failure);
+        }
     };
     if let Some((settlement, elapsed)) = block_admission.settlement {
         observe_gap_settlement(&state.metrics(), "report", settlement, elapsed);
@@ -514,7 +344,7 @@ async fn ingest_report<I: ReportInventory>(
     }
     if ownership_contradiction {
         if let Err(failure) = record_security_event(&mut tx, &auth.agent_id).await {
-            return storage_error(&request_id.0, "record security event", &failure);
+            return storage_failure(&state, &request_id.0, "record security event", &failure);
         }
     }
     // Only admitted Nodes feed the Network-scoped reference head; a purged
@@ -526,16 +356,8 @@ async fn ingest_report<I: ReportInventory>(
         .filter(|node| node_admission.admits(node.node_id))
         .map(|node| node.network_key.to_string())
         .collect::<Vec<_>>();
-    if update_network_references(&mut tx, &network_keys, &now_text)
-        .await
-        .is_err()
-    {
-        return error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
+    if let Err(failure) = update_network_references(&mut tx, &network_keys, &now_text).await {
+        return storage_failure(&state, &request_id.0, "update network references", &failure);
     }
     let nodes: Vec<NodeReceipt> = parsed
         .inventory
@@ -743,7 +565,12 @@ async fn ingest_report<I: ReportInventory>(
     .execute(&mut *tx)
     .await
     {
-        return storage_error(&request_id.0, "close stale agent boot", &stale_failure);
+        return storage_failure(
+            &state,
+            &request_id.0,
+            "close stale agent boot",
+            &stale_failure,
+        );
     }
     let boot_upsert = sqlx::query("INSERT INTO agent_boots (agent_id, agent_epoch, boot_id, status, previous_boot_id, last_sequence, close_report_id, closed_at, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, CASE WHEN $7='closed' THEN $8 ELSE NULL END, CASE WHEN $9='closed' THEN $10 ELSE NULL END, $11, $12) ON CONFLICT(agent_id, agent_epoch, boot_id) DO UPDATE SET status=excluded.status, previous_boot_id=COALESCE(excluded.previous_boot_id, agent_boots.previous_boot_id), last_sequence=CASE WHEN agent_boots.last_sequence >= excluded.last_sequence THEN agent_boots.last_sequence ELSE excluded.last_sequence END, close_report_id=COALESCE(excluded.close_report_id, agent_boots.close_report_id), closed_at=COALESCE(excluded.closed_at, agent_boots.closed_at), updated_at=excluded.updated_at")
         .bind(&auth.agent_id)
@@ -761,7 +588,7 @@ async fn ingest_report<I: ReportInventory>(
         .execute(&mut *tx)
         .await;
     if let Err(boot_failure) = boot_upsert {
-        return storage_error(&request_id.0, "upsert agent boot", &boot_failure);
+        return storage_failure(&state, &request_id.0, "upsert agent boot", &boot_failure);
     }
     let clock_skew_ms = parsed.host.clock_skew.latest;
     let clock_status = match clock_skew_ms {
@@ -814,7 +641,12 @@ async fn ingest_report<I: ReportInventory>(
         .execute(&mut *tx)
         .await;
     if let Err(update_failure) = updated {
-        return storage_error(&request_id.0, "update agent report state", &update_failure);
+        return storage_failure(
+            &state,
+            &request_id.0,
+            "update agent report state",
+            &update_failure,
+        );
     }
     if should_activate_new_boot {
         if let Err(failure) = sqlx::query("UPDATE agents SET active_boot_status='active', previous_boot_id=$1, close_applied_at=$2 WHERE agent_id=$3")
@@ -824,7 +656,7 @@ async fn ingest_report<I: ReportInventory>(
             .execute(&mut *tx)
             .await
         {
-            return storage_error(&request_id.0, "activate new boot", &failure);
+            return storage_failure(&state, &request_id.0, "activate new boot", &failure);
         }
         if let Err(failure) = sqlx::query("UPDATE agent_boots SET status='closed', closed_at=$1, updated_at=$2 WHERE agent_id=$3 AND agent_epoch=$4 AND boot_id=$5")
             .bind(&now_text).bind(&now_text).bind(&auth.agent_id)
@@ -833,7 +665,7 @@ async fn ingest_report<I: ReportInventory>(
             .execute(&mut *tx)
             .await
         {
-            return storage_error(&request_id.0, "close previous boot", &failure);
+            return storage_failure(&state, &request_id.0, "close previous boot", &failure);
         }
     }
     // Alert evaluation runs in the same transaction as the accepted
@@ -852,7 +684,7 @@ async fn ingest_report<I: ReportInventory>(
         {
             Ok(owned) => owned,
             Err(failure) => {
-                return storage_error(&request_id.0, "load owned nodes", &failure);
+                return storage_failure(&state, &request_id.0, "load owned nodes", &failure);
             }
         };
     let node_ids: Vec<String> = parsed
@@ -871,7 +703,13 @@ async fn ingest_report<I: ReportInventory>(
     .await
     {
         Ok(changes) => changes,
-        Err(_) => {
+        Err(crate::alerts::AlertError::Database(failure)) => {
+            return storage_failure(&state, &request_id.0, "evaluate report alerts", &failure);
+        }
+        // Validation guards Admin input; an ingested Report reaching it is a
+        // Server defect, refused for retry rather than half-committed.
+        Err(crate::alerts::AlertError::Validation(reason)) => {
+            tracing::error!(error = %reason, "report ingestion alert evaluation failed");
             return error(
                 &request_id.0,
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -893,7 +731,12 @@ async fn ingest_report<I: ReportInventory>(
         .map(|node| node.network_key.to_string())
         .collect::<HashSet<_>>();
     if let Err(commit_failure) = tx.commit().await {
-        return storage_error(&request_id.0, "commit report transaction", &commit_failure);
+        return storage_failure(
+            &state,
+            &request_id.0,
+            "commit report transaction",
+            &commit_failure,
+        );
     }
     // Retention sweeps (issues #213/#214/#217) are bounded hygiene rather than
     // part of the receipt, so they run on the crate::retention::run_worker
@@ -1669,6 +1512,36 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["error"]["code"], "storage_conflict");
         assert_eq!(body["error"]["requestId"], "test-request");
+    }
+
+    // The same contract holds for the Inventory projection: a constraint the
+    // Node relations break is a storage conflict, and nothing of the Report
+    // commits.
+    #[tokio::test]
+    pub(super) async fn a_constraint_failure_in_the_inventory_projection_is_a_storage_conflict() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        // A first Report opens one Agent and one Network interval per Node, so
+        // a single interval per Node breaks on the second.
+        sqlx::query(
+            "CREATE UNIQUE INDEX one_interval_per_node ON node_relationship_intervals (node_id)",
+        )
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+        let body =
+            include_bytes!("../../../../platpulse-core/tests/fixtures/report_v1_minimal.json")
+                .to_vec();
+        let response = submit_response(&state, &agent_id, body).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["code"], "storage_conflict", "{body}");
+        let receipts: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM agent_report_receipts WHERE agent_id=$1")
+                .bind(&agent_id)
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(receipts, 0);
     }
 
     #[tokio::test]

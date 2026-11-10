@@ -112,6 +112,15 @@ pub(super) fn restamp_fixture(raw: &mut serde_json::Value, now: time::OffsetDate
 }
 
 pub(super) async fn submit_status(state: &AppState, agent_id: &str, body: Vec<u8>) -> StatusCode {
+    submit_response(state, agent_id, body).await.status()
+}
+
+/// The whole response, for a test that reads the error envelope.
+pub(super) async fn submit_response(
+    state: &AppState,
+    agent_id: &str,
+    body: Vec<u8>,
+) -> axum::response::Response {
     handler(
         State(state.clone()),
         Extension(AgentAuthInfo {
@@ -122,7 +131,6 @@ pub(super) async fn submit_status(state: &AppState, agent_id: &str, body: Vec<u8
         Bytes::from(body),
     )
     .await
-    .status()
 }
 
 pub(super) async fn body_json(response: axum::response::Response) -> serde_json::Value {
