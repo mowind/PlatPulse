@@ -236,73 +236,12 @@ async fn ingest_report<I: ReportInventory>(
         }
     };
 
-    let existing = match sqlx::query_as::<_, ReceiptRow>(
-        "SELECT report_body_sha256, receipt_body FROM agent_report_receipts WHERE report_id = $1",
-    )
-    .bind(parsed.report_id.to_string())
-    .fetch_optional(&mut *tx)
-    .await
-    {
-        Ok(row) => row,
-        Err(db_error) => {
-            state.note_database_error(&db_error);
-            return error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
+    match find_replay::<I>(&mut tx, &auth.agent_id, parsed.report_id, &hash).await {
+        Ok(None) => {}
+        Ok(Some(replay)) => return replay.into_response(&request_id.0),
+        Err(failure) => {
+            return storage_failure(&state, &request_id.0, "read stored receipt", &failure);
         }
-    };
-    if let Some(existing) = existing {
-        if existing.report_body_sha256 != hash.to_string() {
-            return error(
-                &request_id.0,
-                StatusCode::CONFLICT,
-                "report_identity_conflict",
-                "Report identity conflicts with a stored report",
-            );
-        }
-        // Replay never bypasses the live Agent boundary: a removed Agent's
-        // retained Receipt is not returned even when the immutable bytes match
-        // (design 15.10.5, issue #192).
-        match sqlx::query_scalar::<_, i64>(
-            "SELECT 1 FROM agents WHERE agent_id = $1 AND deleted_at IS NULL",
-        )
-        .bind(&auth.agent_id)
-        .fetch_optional(&mut *tx)
-        .await
-        {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                return error(
-                    &request_id.0,
-                    StatusCode::UNAUTHORIZED,
-                    "agent_auth_required",
-                    "Agent credential is invalid",
-                );
-            }
-            Err(_) => {
-                return error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "Server database is unavailable",
-                );
-            }
-        }
-        let receipt = match replay_receipt::<I>(&existing.receipt_body) {
-            Ok(receipt) => receipt,
-            Err(()) => {
-                return error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "Stored receipt is unavailable",
-                );
-            }
-        };
-        return receipt_response(receipt);
     }
     // After the coordinated cutover the frozen v1 route is replay-only. An
     // unseen v1 Report is explicitly unsupported: it creates no acceptance
@@ -476,30 +415,26 @@ async fn ingest_report<I: ReportInventory>(
         }
     };
 
-    // A sequence is unique within one boot. Never silently accept a competing body.
-    let sequence_conflict = match sqlx::query_scalar::<_, String>("SELECT report_id FROM agent_report_receipts WHERE agent_id = $1 AND agent_epoch = $2 AND boot_id = $3 AND report_sequence = $4")
-        .bind(&auth.agent_id).bind(parsed.agent_epoch as i64).bind(parsed.boot_id.to_string()).bind(parsed.report_sequence as i64).fetch_optional(&mut *tx).await {
-            Ok(v) => v, Err(_) => return error(&request_id.0, StatusCode::SERVICE_UNAVAILABLE, "unavailable", "Server database is unavailable")
+    // A sequence is unique within one boot. Never silently accept a competing
+    // body. This early read spares a doomed Report its projection work;
+    // store_receipt is the barrier that holds under concurrency.
+    let sequence_conflict = match sqlx::query_scalar::<_, String>(
+        "SELECT report_id FROM agent_report_receipts WHERE agent_id = $1 AND agent_epoch = $2 AND boot_id = $3 AND report_sequence = $4",
+    )
+    .bind(&auth.agent_id)
+    .bind(parsed.agent_epoch as i64)
+    .bind(parsed.boot_id.to_string())
+    .bind(parsed.report_sequence as i64)
+    .fetch_optional(&mut *tx)
+    .await
+    {
+        Ok(taken) => taken,
+        Err(failure) => {
+            return storage_failure(&state, &request_id.0, "read report sequence", &failure);
+        }
     };
     if sequence_conflict.is_some() {
-        if record_security_event(&mut tx, &auth.agent_id)
-            .await
-            .is_err()
-            || tx.commit().await.is_err()
-        {
-            return error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
-        return error(
-            &request_id.0,
-            StatusCode::CONFLICT,
-            "conflicting_boot",
-            "Boot sequence conflicts with a stored report",
-        );
+        return refuse_sequence_taken(&state, tx, &auth.agent_id, &request_id.0).await;
     }
     if let Some(active) = &agent.active_boot_id {
         if active != &parsed.boot_id.to_string() {
@@ -1085,124 +1020,14 @@ async fn ingest_report<I: ReportInventory>(
             samples,
         }))
     };
-    let stored = receipt.to_bytes();
-    // The same immutable Report can be delivered twice at once: a sender
-    // deadline that expired while the first attempt was still committing, or a
-    // reconnect replay. The insert therefore has to be conflict tolerant
-    // instead of an error path. A unique violation aborts the surrounding
-    // PostgreSQL transaction, so the recovery read below could never run and
-    // the second attempt surfaced as 503 storage_conflict; ON CONFLICT DO
-    // NOTHING reports the loser as zero rows and leaves the transaction
-    // usable, and the Receipt the winner stored answers both attempts.
-    let inserted = sqlx::query("INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (report_id) DO NOTHING").bind(parsed.report_id.to_string()).bind(&auth.agent_id).bind(parsed.agent_epoch as i64).bind(parsed.boot_id.to_string()).bind(parsed.report_sequence as i64).bind(hash.to_string()).bind(disposition_name(disposition)).bind(&stored).bind(&now_text).execute(&mut *tx).await;
-    match inserted {
-        Ok(result) if result.rows_affected() == 1 => {}
-        Ok(_) => {
-            // Another attempt stored this Report first. Replaying its Receipt
-            // is the idempotent answer, but it must respect the same Agent
-            // boundary the pre-check applies: a removed Agent never gets a
-            // retained Receipt back (design 15.10.5, issue #192).
-            let concurrent = match sqlx::query_as::<_, ReceiptRow>(
-                "SELECT report_body_sha256, receipt_body FROM agent_report_receipts WHERE report_id = $1",
-            )
-            .bind(parsed.report_id.to_string())
-            .fetch_optional(&mut *tx)
-            .await
-            {
-                Ok(row) => row,
-                Err(db_error) => {
-                    state.note_database_error(&db_error);
-                    return error(
-                        &request_id.0,
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "unavailable",
-                        "Server database is unavailable",
-                    );
-                }
-            };
-            let Some(concurrent) = concurrent else {
-                return error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "Stored receipt is unavailable",
-                );
-            };
-            if concurrent.report_body_sha256 != hash.to_string() {
-                return error(
-                    &request_id.0,
-                    StatusCode::CONFLICT,
-                    "report_identity_conflict",
-                    "Report identity conflicts with a stored report",
-                );
-            }
-            match sqlx::query_scalar::<_, i64>(
-                "SELECT 1 FROM agents WHERE agent_id = $1 AND deleted_at IS NULL",
-            )
-            .bind(&auth.agent_id)
-            .fetch_optional(&mut *tx)
-            .await
-            {
-                Ok(Some(_)) => {}
-                Ok(None) => {
-                    return error(
-                        &request_id.0,
-                        StatusCode::UNAUTHORIZED,
-                        "agent_auth_required",
-                        "Agent credential is invalid",
-                    );
-                }
-                Err(db_error) => {
-                    state.note_database_error(&db_error);
-                    return error(
-                        &request_id.0,
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "unavailable",
-                        "Server database is unavailable",
-                    );
-                }
-            }
-            let Ok(receipt) = replay_receipt::<I>(&concurrent.receipt_body) else {
-                return error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "Stored receipt is unavailable",
-                );
-            };
-            let _ = tx.rollback().await;
-            return receipt_response(receipt);
+    match store_receipt(&mut tx, &parsed, &hash, &receipt, &now_text, None).await {
+        Ok(StoreOutcome::Stored) => {}
+        Ok(StoreOutcome::Replay(replay)) => return replay.into_response(&request_id.0),
+        Ok(StoreOutcome::SequenceTaken) => {
+            return refuse_sequence_taken(&state, tx, &auth.agent_id, &request_id.0).await;
         }
-        Err(insert_failure) => {
-            // PostgreSQL admits two concurrent Reports of one Boot into this
-            // insert, so the unique key (agent_id, agent_epoch, boot_id,
-            // report_sequence) is the last sequence barrier the earlier read
-            // cannot be. A sequence another Report already holds is the same
-            // refusal a sequential duplicate receives, not a storage failure.
-            // The failed statement aborted this transaction, so the security
-            // event is recorded on a fresh one.
-            if matches!(
-                insert_failure,
-                sqlx::Error::Database(ref database) if database.is_unique_violation()
-            ) {
-                let _ = tx.rollback().await;
-                if let Ok(mut retry_tx) = crate::database::begin(state.db().pool()).await {
-                    if record_security_event(&mut retry_tx, &auth.agent_id)
-                        .await
-                        .is_ok()
-                    {
-                        let _ = retry_tx.commit().await;
-                    }
-                }
-                return error(
-                    &request_id.0,
-                    StatusCode::CONFLICT,
-                    "conflicting_boot",
-                    "Boot sequence conflicts with a stored report",
-                );
-            }
-            state.note_database_error(&insert_failure);
-            return storage_error(&request_id.0, "store report receipt", &insert_failure);
+        Err(failure) => {
+            return storage_failure(&state, &request_id.0, "store report receipt", &failure);
         }
     }
     let lifecycle_status = match parsed.boot_transition {
