@@ -274,12 +274,13 @@ pub(crate) async fn create_person(
     }
     let password_hash = match hash_password(body.password.as_bytes()) {
         Ok(hash) => hash,
-        Err(_) => {
+        Err(error) => {
+            tracing::error!(error = %error, "password hashing failed");
             return mutation_error(
                 &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "Server could not complete the request",
             );
         }
     };
@@ -665,12 +666,13 @@ pub(crate) async fn reset_person_password(
     }
     let password_hash = match hash_password(body.password.as_bytes()) {
         Ok(hash) => hash,
-        Err(_) => {
+        Err(error) => {
+            tracing::error!(error = %error, "password hashing failed");
             return mutation_error(
                 &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "Server could not complete the request",
             );
         }
     };

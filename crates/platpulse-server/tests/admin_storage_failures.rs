@@ -1,4 +1,4 @@
-//! Admin storage failures are answered as failures (issue #413).
+//! Admin storage failures are logged and answered as storage failures.
 //!
 //! These tests build the full application with build_app on the Storage
 //! Backend the test run selects (ADR 0013) and break the database under a
@@ -94,6 +94,27 @@ async fn body_json(response: axum::response::Response) -> Value {
 fn admin_post(uri: &str, session: &Session, body: &str) -> Request<Body> {
     Request::builder()
         .method("POST")
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::ORIGIN, DEVELOPMENT_ORIGIN)
+        .header("x-csrf-token", &session.csrf)
+        .header(header::COOKIE, &session.cookie)
+        .body(Body::from(body.to_owned()))
+        .unwrap()
+}
+
+fn admin_get(uri: &str, session: &Session) -> Request<Body> {
+    Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header(header::COOKIE, &session.cookie)
+        .body(Body::empty())
+        .unwrap()
+}
+
+fn admin_put(uri: &str, session: &Session, body: &str) -> Request<Body> {
+    Request::builder()
+        .method("PUT")
         .uri(uri)
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::ORIGIN, DEVELOPMENT_ORIGIN)
@@ -282,6 +303,154 @@ async fn an_absent_silence_target_is_still_a_validation_error() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let value = body_json(response).await;
     assert_eq!(value["error"]["code"], "alert_validation", "{value}");
+}
+
+/// A Rule override target that cannot be read is not a missing target:
+/// the request answers 503 instead of a validation error.
+#[tokio::test]
+async fn a_failed_rule_override_target_read_is_unavailable_not_a_missing_target() {
+    let harness = Harness::boot().await;
+    let owner = login(&harness).await;
+    sqlx::query("ALTER TABLE networks RENAME TO networks_unreadable")
+        .execute(harness.pool())
+        .await
+        .unwrap();
+
+    let response = harness
+        .send(admin_put(
+            "/api/admin/v1/alerts/rules/node.block_stalled/overrides",
+            &owner,
+            r#"{"expectedVersion":1,"scopeKind":"network","scopeValue":"platon-mainnet","enabled":true}"#,
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let value = body_json(response).await;
+    assert_eq!(value["error"]["code"], "unavailable", "{value}");
+    assert_eq!(value["error"]["message"], "Server database is unavailable");
+}
+
+/// A Maintenance Window target that cannot be read is not a missing target:
+/// the request answers 503 instead of a validation error.
+#[tokio::test]
+async fn a_failed_maintenance_window_target_read_is_unavailable_not_a_missing_target() {
+    let harness = Harness::boot().await;
+    let owner = login(&harness).await;
+    sqlx::query("ALTER TABLE networks RENAME TO networks_unreadable")
+        .execute(harness.pool())
+        .await
+        .unwrap();
+
+    let body = serde_json::json!({
+        "scopeKind": "network",
+        "scopeValue": NETWORK_KEY,
+        "expectedRuleKeys": [],
+        "reason": "planned upgrade",
+        "startsAt": "2026-01-01T00:00:00Z",
+        "endsAt": "2026-01-02T00:00:00Z",
+    })
+    .to_string();
+    let response = harness
+        .send(admin_post(
+            "/api/admin/v1/alerts/maintenance",
+            &owner,
+            &body,
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let value = body_json(response).await;
+    assert_eq!(value["error"]["code"], "unavailable", "{value}");
+    assert_eq!(value["error"]["message"], "Server database is unavailable");
+}
+
+/// A Retention policy that cannot be read is not an unknown family: the
+/// request answers 503 instead of 404 `retention_family_not_found`.
+#[tokio::test]
+async fn a_failed_retention_policy_read_is_unavailable_not_a_missing_family() {
+    let harness = Harness::boot().await;
+    let owner = login(&harness).await;
+    sqlx::query("ALTER TABLE retention_policies RENAME TO retention_policies_unreadable")
+        .execute(harness.pool())
+        .await
+        .unwrap();
+
+    let response = harness
+        .send(admin_put(
+            "/api/admin/v1/retention/policies/raw_block_summary",
+            &owner,
+            r#"{"retentionDays":7,"expectedPolicyVersion":"any"}"#,
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let value = body_json(response).await;
+    assert_eq!(value["error"]["code"], "unavailable", "{value}");
+    assert_eq!(value["error"]["message"], "Server database is unavailable");
+}
+
+/// A Backup artifact that cannot be read is not a missing artifact: the
+/// request answers 503 instead of 404 `backup_artifact_not_found`.
+#[tokio::test]
+async fn a_failed_backup_artifact_read_is_unavailable_not_a_missing_artifact() {
+    let harness = Harness::boot().await;
+    let owner = login(&harness).await;
+    sqlx::query("ALTER TABLE backup_artifacts RENAME TO backup_artifacts_unreadable")
+        .execute(harness.pool())
+        .await
+        .unwrap();
+
+    let response = harness
+        .send(admin_post(
+            "/api/admin/v1/backups/missing-artifact/verify",
+            &owner,
+            "{}",
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let value = body_json(response).await;
+    assert_eq!(value["error"]["code"], "unavailable", "{value}");
+    assert_eq!(value["error"]["message"], "Server database is unavailable");
+}
+
+/// An Admin storage failure caused by a corrupt database page latches the
+/// corruption readiness component: later requests must not report ready.
+#[cfg_attr(storage_postgres, ignore = "corrupt SQLite page fixture")]
+#[tokio::test]
+async fn a_corrupt_database_failure_latches_corruption_readiness() {
+    let harness = Harness::boot().await;
+    let owner = login(&harness).await;
+    sqlx::raw_sql(
+        "PRAGMA writable_schema=ON;
+         UPDATE sqlite_schema SET rootpage=2147483647 WHERE name='networks';
+         PRAGMA writable_schema=RESET;",
+    )
+    .execute(harness.pool())
+    .await
+    .unwrap();
+
+    let response = harness
+        .send(admin_get("/api/admin/v1/networks/platon-mainnet", &owner))
+        .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let value = body_json(response).await;
+    assert_eq!(value["error"]["code"], "unavailable", "{value}");
+
+    let health = harness
+        .send(
+            Request::builder()
+                .uri("/health/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(health.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let value = body_json(health).await;
+    let corruption = value["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|component| component["name"] == "corruption")
+        .unwrap();
+    assert_eq!(corruption["status"], "not_ready", "{value}");
+    assert_eq!(corruption["reason"], "integrity_check_failed", "{value}");
 }
 
 /// An Operation that cannot be read is not an unknown Operation: cancel

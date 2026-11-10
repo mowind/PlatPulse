@@ -382,7 +382,7 @@ pub struct NetworkUpdateRequest {
     tag = "admin",
     params(("network_key" = String, Path, description = "Registered Network key")),
     request_body = NetworkUpdateRequest,
-    responses((status = 200, body = NetworkResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody))
+    responses((status = 200, body = NetworkResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
 )]
 pub(crate) async fn update_network(
     State(state): State<AppState>,

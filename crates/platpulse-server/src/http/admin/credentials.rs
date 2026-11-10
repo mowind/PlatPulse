@@ -185,21 +185,11 @@ pub(crate) async fn admin_recovery_token(
         Err(crate::enrollment::RecoveryError::Database(error)) => {
             storage_failure(&state, &request_id.0, &error)
         }
-        Err(crate::enrollment::RecoveryError::InvalidLifetime(reason)) => mutation_error(
+        Err(_) => mutation_error(
             &request_id.0,
-            StatusCode::BAD_REQUEST,
-            "invalid_lifetime",
-            reason,
-        ),
-        Err(
-            crate::enrollment::RecoveryError::Invalid
-            | crate::enrollment::RecoveryError::Expired
-            | crate::enrollment::RecoveryError::Consumed,
-        ) => mutation_error(
-            &request_id.0,
-            StatusCode::BAD_REQUEST,
-            "invalid_token",
-            "recovery token is invalid",
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "Server database is unavailable",
         ),
     }
 }
@@ -305,11 +295,11 @@ pub(crate) async fn admin_rotate_credential(
         Err(crate::enrollment::RotationError::Database(error)) => {
             storage_failure(&state, &request_id.0, &error)
         }
-        Err(crate::enrollment::RotationError::InvalidLifetime(reason)) => mutation_error(
+        Err(_) => mutation_error(
             &request_id.0,
-            StatusCode::BAD_REQUEST,
-            "invalid_lifetime",
-            reason,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "Server database is unavailable",
         ),
     }
 }

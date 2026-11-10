@@ -94,7 +94,7 @@ fn severity_rank(severity: AttentionSeverity) -> u8 {
     get,
     path = "/api/admin/v1/overview",
     tag = "admin",
-    responses((status = 200, description = "Server-owned attention queue and overview summary", body = AdminOverview), (status = 500, body = crate::http::ApiErrorBody))
+    responses((status = 200, description = "Server-owned attention queue and overview summary", body = AdminOverview), (status = 500, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
 )]
 pub(crate) async fn overview(
     State(state): State<AppState>,

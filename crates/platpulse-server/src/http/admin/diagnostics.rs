@@ -1362,7 +1362,7 @@ pub(super) struct AgentAdminRow {
     get,
     path = "/api/admin/v1/agents",
     tag = "admin",
-    responses((status = 200, description = "Owner-only Agent and Node diagnostics", body = [AgentDiagnostic]), (status = 500, body = crate::http::ApiErrorBody))
+    responses((status = 200, description = "Owner-only Agent and Node diagnostics", body = [AgentDiagnostic]), (status = 503, body = crate::http::ApiErrorBody))
 )]
 pub(super) async fn diagnostics(
     State(state): State<AppState>,

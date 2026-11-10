@@ -129,7 +129,7 @@ export function useNetworkTupleWrite(generation: number, networkKey: string): Ne
  *  update_network itself (crates/platpulse-server/src/http/admin.rs) and of
  *  the guards in front of every Admin mutation (proxy headers, session,
  *  Owner role, Inventory cutover; crates/platpulse-server/src/http/mod.rs).
- *  The generated OpenAPI lists only 400/403/404 for the route, so this list
+ *  The generated OpenAPI lists 400/403/404/503 for the route, so this list
  *  is taken from that code and must follow it. Each is sent before the
  *  update's transaction commits, or when the commit itself fails, so each
  *  proves the update was not applied. */
@@ -138,7 +138,7 @@ const UPDATE_REFUSALS: ReadonlyMap<number, ReadonlySet<string>> = new Map([
   [401, new Set(['auth_required'])],
   [403, new Set(['csrf_validation_failed', 'owner_required', 'untrusted_proxy_headers', 'proxy_scheme_required'])],
   [404, new Set(['not_found'])],
-  [503, new Set(['unavailable', 'inventory_cutover_required'])],
+  [503, new Set(['unavailable', 'storage_conflict', 'inventory_cutover_required'])],
 ])
 
 /** Whether the Server refused the update: one of its documented refusals,

@@ -874,6 +874,9 @@ pub(crate) async fn test_notification_channel(
             }
             return response;
         }
+        Err(TestSendError::Database(error)) => {
+            return storage_failure(&state, &request_id.0, &error);
+        }
         Err(TestSendError::Unavailable) => return unavailable_error(&request_id.0),
     };
     if !outcome.deduplicated {

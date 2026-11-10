@@ -255,7 +255,7 @@ async fn admin_node_list_item(
     get,
     path = "/api/admin/v1/nodes",
     tag = "admin",
-    responses((status = 200, description = "Owner-only Node inventory with Server-owned metadata and per-Node identity disposition", body = [AdminNodeListItem]), (status = 500, body = crate::http::ApiErrorBody))
+    responses((status = 200, description = "Owner-only Node inventory with Server-owned metadata and per-Node identity disposition", body = [AdminNodeListItem]), (status = 503, body = crate::http::ApiErrorBody))
 )]
 pub(super) async fn admin_nodes(
     State(state): State<AppState>,
@@ -349,7 +349,7 @@ pub struct AdminNodeDetail {
     path = "/api/admin/v1/nodes/{node_id}",
     tag = "admin",
     params(("node_id" = String, Path, description = "Node ID")),
-    responses((status = 200, description = "Owner-only Node detail with Server-owned metadata and per-Node diagnostics", body = AdminNodeDetail), (status = 404, body = crate::http::ApiErrorBody), (status = 500, body = crate::http::ApiErrorBody))
+    responses((status = 200, description = "Owner-only Node detail with Server-owned metadata and per-Node diagnostics", body = AdminNodeDetail), (status = 404, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
 )]
 pub(super) async fn admin_node_detail(
     State(state): State<AppState>,

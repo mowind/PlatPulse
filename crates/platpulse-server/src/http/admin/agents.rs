@@ -9,7 +9,7 @@ use crate::http::realtime::AdminResource;
     path = "/api/admin/v1/agents/{agent_id}",
     tag = "admin",
     params(("agent_id" = String, Path, description = "Agent ID")),
-    responses((status = 200, body = AgentDiagnostic), (status = 403, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 500, body = crate::http::ApiErrorBody))
+    responses((status = 200, body = AgentDiagnostic), (status = 403, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
 )]
 pub(crate) async fn admin_agent_detail(
     State(state): State<AppState>,
