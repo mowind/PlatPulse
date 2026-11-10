@@ -230,7 +230,7 @@ pub(crate) async fn people_list(
     path = "/api/admin/v1/people",
     tag = "admin",
     request_body = CreatePersonRequest,
-    responses((status = 200, body = Person), (status = 400, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 409, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
+    responses((status = 200, body = Person), (status = 400, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 409, body = crate::http::ApiErrorBody), (status = 500, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
 )]
 pub(crate) async fn create_person(
     State(state): State<AppState>,
@@ -632,7 +632,7 @@ pub(crate) async fn set_person_status(
     tag = "admin",
     params(("user_id" = String, Path, description = "User ID")),
     request_body = ResetPasswordRequest,
-    responses((status = 204, description = "Password reset and Sessions revoked"), (status = 400, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
+    responses((status = 204, description = "Password reset and Sessions revoked"), (status = 400, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 500, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
 )]
 pub(crate) async fn reset_person_password(
     State(state): State<AppState>,

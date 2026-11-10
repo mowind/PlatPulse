@@ -7313,6 +7313,7 @@ export type CreatePersonErrors = {
     400: ApiErrorBody;
     403: ApiErrorBody;
     409: ApiErrorBody;
+    500: ApiErrorBody;
     503: ApiErrorBody;
 };
 
@@ -7340,6 +7341,7 @@ export type ResetPersonPasswordErrors = {
     400: ApiErrorBody;
     403: ApiErrorBody;
     404: ApiErrorBody;
+    500: ApiErrorBody;
     503: ApiErrorBody;
 };
 

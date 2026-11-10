@@ -81,6 +81,7 @@ describe('Network tuple update outcome', () => {
     [403, 'proxy_scheme_required'],
     [404, 'not_found'],
     [503, 'unavailable'],
+    [503, 'storage_conflict'],
     [503, 'inventory_cutover_required'],
   ])('takes the Server refusal %i %s as not applied and lifts the hold', async (status, code) => {
     const requests = serve(() => refusal(status, code))

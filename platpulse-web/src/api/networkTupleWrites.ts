@@ -126,7 +126,7 @@ export function useNetworkTupleWrite(generation: number, networkKey: string): Ne
 }
 
 /** The refusals the update can answer with, by HTTP status: those of
- *  update_network itself (crates/platpulse-server/src/http/admin.rs) and of
+ *  update_network itself (crates/platpulse-server/src/http/admin/networks.rs) and of
  *  the guards in front of every Admin mutation (proxy headers, session,
  *  Owner role, Inventory cutover; crates/platpulse-server/src/http/mod.rs).
  *  The generated OpenAPI lists 400/403/404/503 for the route, so this list
