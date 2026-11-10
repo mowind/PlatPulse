@@ -1663,6 +1663,58 @@ mod tests {
         );
     }
 
+    /// A Report rejected for its own content still lands on its (Boot,
+    /// sequence) slot. When another Report already holds that slot the
+    /// rejection is a competing body, not a storage failure the Agent would
+    /// retry forever.
+    #[tokio::test]
+    pub(super) async fn a_rejected_report_on_a_taken_sequence_is_a_conflicting_boot() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let mut report: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+        report.report_sequence = 2;
+        report.inventory.revision = 2;
+        report.report_id = "0195f2a1-0041-4041-8041-000000000041".parse().unwrap();
+        submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+
+        // Sequence 1 again under a new identity, declaring the revision the
+        // Agent already moved past: rejected content on a taken slot.
+        report.report_sequence = 1;
+        report.inventory.revision = 1;
+        report.report_id = "0195f2a1-0042-4042-8042-000000000042".parse().unwrap();
+        let response = handler(
+            State(state.clone()),
+            Extension(AgentAuthInfo {
+                agent_id: agent_id.clone(),
+                credential_id: "test".into(),
+            }),
+            Extension(RequestId(Arc::from("test-request"))),
+            Bytes::from(serde_json::to_vec(&report).unwrap()),
+        )
+        .await;
+        let status = response.status();
+        let error = body_json(response).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{error}");
+        assert_eq!(error["error"]["code"], "conflicting_boot", "{error}");
+        let security_events: i64 =
+            sqlx::query_scalar("SELECT security_event_count FROM agents WHERE agent_id=$1")
+                .bind(&agent_id)
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(security_events, 1);
+        let stored: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM agent_report_receipts WHERE report_id=$1")
+                .bind(report.report_id.to_string())
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(stored, 0);
+    }
+
     #[tokio::test]
     pub(super) async fn closing_then_drained_previous_atomically_rotates_boot_and_rejects_old_reports()
      {
