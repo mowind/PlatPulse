@@ -269,20 +269,13 @@ pub(super) async fn admin_nodes(
     .await;
     let rows = match rows {
         Ok(rows) => rows,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let mut items = Vec::with_capacity(rows.len());
     for row in rows {
         match admin_node_list_item(&state, row).await {
             Ok(item) => items.push(item),
-            Err(_) => return diagnostics_unavailable(&request_id),
+            Err(error) => return storage_failure(&state, &request_id.0, &error),
         }
     }
     Json(items).into_response()
@@ -372,14 +365,7 @@ pub(super) async fn admin_node_detail(
     .await;
     let Some(row) = (match row {
         Ok(row) => row,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     }) else {
         return mutation_error(
             &request_id.0,
@@ -400,7 +386,7 @@ pub(super) async fn admin_node_detail(
     .await
     {
         Ok(assessed) => assessed,
-        Err(_) => return diagnostics_unavailable(&request_id),
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let diagnostic = assessed.diagnostic;
     let fingerprint = match sqlx::query_scalar::<_, Option<String>>(
@@ -411,18 +397,20 @@ pub(super) async fn admin_node_detail(
     .await
     {
         Ok(fingerprint) => fingerprint.flatten(),
-        Err(_) => return diagnostics_unavailable(&request_id),
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
-    let Ok(agent_spool_backlog_age) = spool_backlog_age_diagnostic(&state, &row.agent_id).await
-    else {
-        return diagnostics_unavailable(&request_id);
+    let agent_spool_backlog_age = match spool_backlog_age_diagnostic(&state, &row.agent_id).await {
+        Ok(value) => value,
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let identity = assessed.identity;
-    let Ok(block_history_rejection) = block_history_rejection(&state, &row.node_id).await else {
-        return diagnostics_unavailable(&request_id);
+    let block_history_rejection = match block_history_rejection(&state, &row.node_id).await {
+        Ok(value) => value,
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
-    let Ok(block_history_holes) = block_history_holes(&state, &row.node_id).await else {
-        return diagnostics_unavailable(&request_id);
+    let block_history_holes = match block_history_holes(&state, &row.node_id).await {
+        Ok(value) => value,
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let transfer = sqlx::query_as::<_, NodeTransferRow>(&format!(
         "SELECT {TRANSFER_COLUMNS} FROM node_transfers WHERE node_id=$1 ORDER BY created_at DESC LIMIT 1"
@@ -432,7 +420,7 @@ pub(super) async fn admin_node_detail(
     .await;
     let transfer = match transfer {
         Ok(transfer) => transfer.map(node_transfer_dto),
-        Err(_) => return diagnostics_unavailable(&request_id),
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let validator_identity = match crate::validator::list_node_validator_identities(
         &state.database(),
@@ -446,7 +434,12 @@ pub(super) async fn admin_node_detail(
             .map(crate::http::validators_admin::AdminNodeValidatorIdentity::from),
         // A failed read is not an absence: report the failure instead of
         // letting the UI render a fabricated not_evaluated identity.
-        Err(error) => return crate::http::validators_admin::error_response(&request_id.0, error),
+        Err(crate::validator::ValidatorError::Database(error)) => {
+            return storage_failure(&state, &request_id.0, &error);
+        }
+        Err(error) => {
+            return crate::http::validators_admin::error_response(&state, &request_id.0, error);
+        }
     };
     Json(AdminNodeDetail {
         node_id: row.node_id,
@@ -507,14 +500,7 @@ pub(super) async fn admin_node_peer_churn(
         .await;
     let Some(_) = (match exists {
         Ok(node_id) => node_id,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     }) else {
         return mutation_error(
             &request_id.0,
@@ -525,12 +511,7 @@ pub(super) async fn admin_node_peer_churn(
     };
     match peer_churn_diagnostic(&state, &node_id).await {
         Ok(diagnostic) => Json(diagnostic).into_response(),
-        Err(_) => mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        ),
+        Err(error) => storage_failure(&state, &request_id.0, &error),
     }
 }
 
@@ -710,14 +691,7 @@ pub(super) async fn admin_node_peer_history(
         .await;
     let Some(_) = (match exists {
         Ok(node_id) => node_id,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     }) else {
         return mutation_error(
             &request_id.0,
@@ -732,24 +706,14 @@ pub(super) async fn admin_node_peer_history(
     if let Some(request) = range {
         return match crate::peer_history::load_range(state.db().pool(), &node_id, &request).await {
             Ok(answer) => Json(admin_peer_range_answer(answer)).into_response(),
-            Err(_) => mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            ),
+            Err(error) => storage_failure(&state, &request_id.0, &error),
         };
     }
     match crate::peer_history::load_history(state.db().pool(), &node_id, crate::auth::now_utc())
         .await
     {
         Ok(history) => Json(admin_peer_history(history)).into_response(),
-        Err(_) => mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        ),
+        Err(error) => storage_failure(&state, &request_id.0, &error),
     }
 }
 
@@ -875,8 +839,8 @@ pub(super) async fn admin_node_investigation(
                 "this Node was purged at {deleted_at}; its evidence was deleted by design and cannot be reconstructed"
             ),
         ),
-        Err(crate::investigation::InvestigationError::Unavailable(_)) => {
-            unavailable_response(&request_id.0)
+        Err(crate::investigation::InvestigationError::Unavailable(error)) => {
+            storage_failure(&state, &request_id.0, &error)
         }
     }
 }
@@ -1065,7 +1029,7 @@ mod tests {
             Extension(request_id()),
         )
         .await;
-        assert_eq!(list.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(list.status(), StatusCode::SERVICE_UNAVAILABLE);
         let detail = admin_node_detail(
             State(state.clone()),
             Path("node-healthy".to_owned()),
@@ -1073,7 +1037,7 @@ mod tests {
             Extension(request_id()),
         )
         .await;
-        assert_eq!(detail.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(detail.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]

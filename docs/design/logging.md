@@ -69,6 +69,7 @@ journalctl -u platpulse-server -o cat | jq 'select(.outcome == "rejected")'   # 
 | --- | --- |
 | Report Ingestion：接受/部分接受/拒收 + 原因码 | 已实现（完成行 `outcome`；HTTP 级拒收 `report refused outcome=<code>` warn；receipt 级整单拒收 `report rejected outcome=<RejectionCode>` warn）。部分接受的逐 Node/样本原因仍只在 receipt 中，待补 |
 | Report 事务存储失败 | 已实现（error，带 `request_id`） |
+| Admin 存储失败（读或写） | 已实现（error，带 `request_id`；唯一/检查约束单独标记为 `storage_conflict`） |
 | Ingestion 后 Retention 清理推迟 | 已实现（warn） |
 | History Gap 结算慢（Report 路径或 Retention 路径单次结算 ≥500ms，issue #282） | 已实现（warn，耗时与检查/解决的 gap 数写在消息里，不占用 `duration_ms`；同时计入 `platpulse_history_gap_settlement_*` 指标）。它是结算退化回全表扫描的早期信号，正常稳态不触发 |
 | 启动、监听、收到关闭信号、优雅关闭完成/不完整及原因 | 已实现 |

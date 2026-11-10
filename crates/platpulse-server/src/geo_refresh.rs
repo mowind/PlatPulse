@@ -488,12 +488,12 @@ pub enum RefreshStart {
 }
 
 /// Why a refresh request was refused before any run was installed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum StartRefreshError {
     /// Geo cannot resolve any address in this configuration.
     Unavailable(&'static str),
     /// The Server database could not enumerate the current Peer references.
-    Database,
+    Database(sqlx::Error),
 }
 
 /// Prepare a refresh: enumerate the current scope, then either join the
@@ -512,7 +512,7 @@ pub async fn begin_refresh(
     }
     let scope = refresh_scope(state.db().pool())
         .await
-        .map_err(|_| StartRefreshError::Database)?;
+        .map_err(StartRefreshError::Database)?;
     match state.geo_refresh().install(&config, run_id, &scope, now) {
         Install::Joined(snapshot) => Ok(RefreshStart::Joined(snapshot)),
         Install::Installed(run) => Ok(RefreshStart::Started(PreparedRefresh {
@@ -1054,12 +1054,13 @@ mod tests {
     async fn disabled_and_unconfigured_geo_are_refused() {
         let dir = tempdir().unwrap();
         let state = refresh_state(&dir, true, GeoProvider::Disabled).await;
-        assert_eq!(
-            begin_refresh(&state, "run-disabled".to_owned(), NOW)
-                .await
-                .err(),
-            Some(StartRefreshError::Unavailable(DISABLED_REASON))
-        );
+        match begin_refresh(&state, "run-disabled".to_owned(), NOW)
+            .await
+            .err()
+        {
+            Some(StartRefreshError::Unavailable(reason)) => assert_eq!(reason, DISABLED_REASON),
+            other => panic!("unexpected: {other:?}"),
+        }
         assert!(state.geo_refresh().snapshot().is_none());
 
         // A deployment without a configured local database cannot run Local
@@ -1077,14 +1078,15 @@ mod tests {
             provider: GeoProvider::LocalMmdb,
             generation: 1,
         });
-        assert_eq!(
-            begin_refresh(&state, "run-local".to_owned(), NOW)
-                .await
-                .err(),
-            Some(StartRefreshError::Unavailable(
-                crate::geo::NO_LOCAL_DATABASE_REASON
-            ))
-        );
+        match begin_refresh(&state, "run-local".to_owned(), NOW)
+            .await
+            .err()
+        {
+            Some(StartRefreshError::Unavailable(reason)) => {
+                assert_eq!(reason, crate::geo::NO_LOCAL_DATABASE_REASON);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
     }
 
     /// The background pass yields exactly the addresses a running refresh

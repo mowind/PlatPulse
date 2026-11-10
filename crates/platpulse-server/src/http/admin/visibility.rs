@@ -66,56 +66,38 @@ pub(crate) async fn set_visibility(
     }
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let before = sqlx::query_scalar::<_, String>("SELECT visibility FROM nodes WHERE node_id = $1")
         .bind(&node_id)
         .fetch_optional(&mut *tx)
         .await;
-    let Some(previous) = (match before {
-        Ok(value) => value,
-        Err(_) => {
+    let previous = match before {
+        Ok(Some(previous)) => previous,
+        Ok(None) => {
             return mutation_error(
                 &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "resource not found",
             );
         }
-    }) else {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::NOT_FOUND,
-            "not_found",
-            "resource not found",
-        );
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let changed_at = crate::auth::format_rfc3339(crate::auth::now_utc());
-    if sqlx::query("UPDATE nodes SET visibility = $1, updated_at = $2 WHERE node_id = $3")
-        .bind(&body.visibility)
-        .bind(&changed_at)
-        .bind(&node_id)
-        .execute(&mut *tx)
-        .await
-        .is_err()
+    if let Err(error) =
+        sqlx::query("UPDATE nodes SET visibility = $1, updated_at = $2 WHERE node_id = $3")
+            .bind(&body.visibility)
+            .bind(&changed_at)
+            .bind(&node_id)
+            .execute(&mut *tx)
+            .await
     {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        );
+        return storage_failure(&state, &request_id.0, &error);
     }
     let before_audit = serde_json::json!({ "visibility": previous });
     let after_audit = serde_json::json!({ "visibility": body.visibility });
-    if crate::auth::insert_audit_change(
+    if let Err(error) = crate::auth::insert_audit_change(
         &mut *tx,
         Some(&principal.0.user_id),
         "node_visibility_changed",
@@ -125,15 +107,11 @@ pub(crate) async fn set_visibility(
         Some(&after_audit),
     )
     .await
-    .is_err()
-        || tx.commit().await.is_err()
     {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        );
+        return storage_failure(&state, &request_id.0, &error);
+    }
+    if let Err(error) = tx.commit().await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     // Visibility is Admin-only metadata: the Public Projection filters on
     // lifecycle alone, so no Home reader has anything to refetch.
@@ -213,14 +191,7 @@ pub(crate) async fn set_node_metadata(
     }
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     // `display_name` is nullable: a Node without a Server-owned name must
     // still be renameable, so the previous value is decoded as Option.
@@ -230,23 +201,17 @@ pub(crate) async fn set_node_metadata(
     .bind(&node_id)
     .fetch_optional(&mut *tx)
     .await;
-    let Some((previous, network_key)) = (match before {
-        Ok(value) => value,
-        Err(_) => {
+    let (previous, network_key) = match before {
+        Ok(Some(value)) => value,
+        Ok(None) => {
             return mutation_error(
                 &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "resource not found",
             );
         }
-    }) else {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::NOT_FOUND,
-            "not_found",
-            "resource not found",
-        );
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     if previous.as_deref() == Some(body.display_name.as_str()) {
         return Json(NodeMetadataResponse {
@@ -256,24 +221,19 @@ pub(crate) async fn set_node_metadata(
         .into_response();
     }
     let changed_at = crate::auth::format_rfc3339(crate::auth::now_utc());
-    if sqlx::query("UPDATE nodes SET display_name = $1, updated_at = $2 WHERE node_id = $3")
-        .bind(&body.display_name)
-        .bind(&changed_at)
-        .bind(&node_id)
-        .execute(&mut *tx)
-        .await
-        .is_err()
+    if let Err(error) =
+        sqlx::query("UPDATE nodes SET display_name = $1, updated_at = $2 WHERE node_id = $3")
+            .bind(&body.display_name)
+            .bind(&changed_at)
+            .bind(&node_id)
+            .execute(&mut *tx)
+            .await
     {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        );
+        return storage_failure(&state, &request_id.0, &error);
     }
     let before_audit = serde_json::json!({ "display_name": previous });
     let after_audit = serde_json::json!({ "display_name": body.display_name });
-    if crate::auth::insert_audit_change(
+    if let Err(error) = crate::auth::insert_audit_change(
         &mut *tx,
         Some(&principal.0.user_id),
         "node_metadata_changed",
@@ -283,15 +243,11 @@ pub(crate) async fn set_node_metadata(
         Some(&after_audit),
     )
     .await
-    .is_err()
-        || tx.commit().await.is_err()
     {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        );
+        return storage_failure(&state, &request_id.0, &error);
+    }
+    if let Err(error) = tx.commit().await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     state
         .admin_realtime()

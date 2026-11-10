@@ -419,7 +419,11 @@ pub async fn record_test_event(
 pub enum RetryError {
     NotFound,
     AlreadyQueued,
-    NotRetryable { state: String },
+    NotRetryable {
+        state: String,
+    },
+    /// The Delivery read or re-arm failed in storage.
+    Database(sqlx::Error),
 }
 
 /// Manual Owner retry: re-arms an existing Delivery for the worker. It
@@ -437,7 +441,7 @@ pub async fn rearm_delivery(
             .bind(delivery_id)
             .fetch_optional(&mut *executor)
             .await
-            .map_err(|_| RetryError::NotFound)?;
+            .map_err(RetryError::Database)?;
     let Some(state) = current else {
         return Err(RetryError::NotFound);
     };
@@ -456,10 +460,10 @@ pub async fn rearm_delivery(
     .bind(&state)
     .execute(&mut *executor)
     .await
-    .map_err(|_| RetryError::NotFound)?;
+    .map_err(RetryError::Database)?;
     load_delivery(executor, delivery_id)
         .await
-        .map_err(|_| RetryError::NotFound)?
+        .map_err(RetryError::Database)?
         .ok_or(RetryError::NotFound)
 }
 

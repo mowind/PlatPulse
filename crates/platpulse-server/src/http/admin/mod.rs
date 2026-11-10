@@ -61,6 +61,43 @@ pub(crate) fn mutation_error(
         .into_response()
 }
 
+/// The answer to a failed Admin storage statement. The error is logged at
+/// `error` inside the request span (which carries `request_id` and
+/// `route`) with the call site in the message, runtime corruption is
+/// latched (ADR 0008), and a unique or check violation answers
+/// `storage_conflict` so a schema or invariant bug is not mistaken for an
+/// outage. A failed read is never answered as absent: callers that check
+/// existence come here, not to their not-found arm.
+#[track_caller]
+pub(crate) fn storage_failure(
+    state: &AppState,
+    request_id: &str,
+    failure: &sqlx::Error,
+) -> Response {
+    let location = std::panic::Location::caller();
+    state.note_database_error(failure);
+    tracing::error!(
+        error = %failure,
+        "admin storage error at {}:{}",
+        location.file(),
+        location.line()
+    );
+    if crate::database::is_constraint_violation(failure) {
+        return mutation_error(
+            request_id,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "storage_conflict",
+            "Server storage rejected the change",
+        );
+    }
+    mutation_error(
+        request_id,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "unavailable",
+        "Server database is unavailable",
+    )
+}
+
 /// Shared browser mutation trust boundary (design §10.2, webui.md §6.4): a
 /// JSON content type, a same-origin request, and the session CSRF header are
 /// all required before any Admin mutation parses its body. A malformed body

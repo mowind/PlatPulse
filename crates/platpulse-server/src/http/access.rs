@@ -26,7 +26,7 @@ use crate::auth::{
     hash_password, now_utc, revoke_user_sessions, site_access_mode, validate_password,
     validate_username,
 };
-use crate::http::admin::{mutation_error, mutation_guard_ok};
+use crate::http::admin::{mutation_error, mutation_guard_ok, storage_failure};
 use crate::http::{AppState, AuthenticatedSession, ROUTE_GROUP_HEADER, RequestId};
 
 /// One allowlisted Person row. Passwords, hashes, and credentials never
@@ -217,12 +217,7 @@ pub(crate) async fn people_list(
             users: rows.into_iter().map(person_dto).collect(),
         })
         .into_response(),
-        Err(_) => mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        ),
+        Err(error) => storage_failure(&state, &request_id.0, &error),
     }
 }
 
@@ -319,12 +314,7 @@ pub(crate) async fn create_person(
             "username_taken",
             "this username is already in use",
         ),
-        Err(IdentityError::Database(_)) => mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        ),
+        Err(IdentityError::Database(error)) => storage_failure(&state, &request_id.0, &error),
         Err(IdentityError::InvalidRole) => mutation_error(
             &request_id.0,
             StatusCode::BAD_REQUEST,
@@ -367,7 +357,11 @@ async fn load_user_for_mutation(
 }
 
 /// Fetch one Person DTO after a mutation committed (allowlisted view).
-async fn person_after_mutation(state: &AppState, user_id: &str) -> Option<Person> {
+/// Ok(None) means the user no longer exists; a failed read stays an error.
+async fn person_after_mutation(
+    state: &AppState,
+    user_id: &str,
+) -> Result<Option<Person>, sqlx::Error> {
     sqlx::query_as::<_, PersonRow>(
         "SELECT u.user_id, u.username, u.role, u.disabled_at, u.created_at,
                 COUNT(s.session_id) AS session_count
@@ -379,9 +373,7 @@ async fn person_after_mutation(state: &AppState, user_id: &str) -> Option<Person
     .bind(user_id)
     .fetch_optional(state.db().pool())
     .await
-    .ok()
-    .flatten()
-    .map(person_dto)
+    .map(|row| row.map(person_dto))
 }
 
 /// Owner-only role change (design §10.2). The final valid Owner is
@@ -433,14 +425,7 @@ pub(crate) async fn set_person_role(
     }
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let outcome: Result<Option<PersonMutation>, sqlx::Error> = async {
         let Some((username, current_role, disabled_at)) =
@@ -483,20 +468,16 @@ pub(crate) async fn set_person_role(
             "the final valid Owner cannot be demoted",
         ),
         Ok(Some(PersonMutation::Role)) => {
-            if tx.commit().await.is_err() {
-                return mutation_error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "server database is unavailable",
-                );
+            if let Err(error) = tx.commit().await {
+                return storage_failure(&state, &request_id.0, &error);
             }
             state
                 .admin_realtime()
                 .publish(AdminResource::Access, None::<String>);
             match person_after_mutation(&state, &user_id).await {
-                Some(person) => Json(person).into_response(),
-                None => mutation_error(
+                Ok(Some(person)) => Json(person).into_response(),
+                Err(error) => storage_failure(&state, &request_id.0, &error),
+                Ok(None) => mutation_error(
                     &request_id.0,
                     StatusCode::NOT_FOUND,
                     "user_not_found",
@@ -513,12 +494,7 @@ pub(crate) async fn set_person_role(
         Ok(Some(PersonMutation::Disabled)) | Ok(Some(PersonMutation::PasswordReset)) => {
             unreachable!("role mutation only produces role outcomes")
         }
-        Err(_) => mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        ),
+        Err(error) => storage_failure(&state, &request_id.0, &error),
     }
 }
 
@@ -562,14 +538,7 @@ pub(crate) async fn set_person_status(
     };
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let outcome: Result<Option<PersonMutation>, sqlx::Error> = async {
         let Some((username, current_role, disabled_at)) =
@@ -623,20 +592,16 @@ pub(crate) async fn set_person_status(
             "the final valid Owner cannot be disabled",
         ),
         Ok(Some(PersonMutation::Disabled)) => {
-            if tx.commit().await.is_err() {
-                return mutation_error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "server database is unavailable",
-                );
+            if let Err(error) = tx.commit().await {
+                return storage_failure(&state, &request_id.0, &error);
             }
             state
                 .admin_realtime()
                 .publish(AdminResource::Access, None::<String>);
             match person_after_mutation(&state, &user_id).await {
-                Some(person) => Json(person).into_response(),
-                None => mutation_error(
+                Ok(Some(person)) => Json(person).into_response(),
+                Err(error) => storage_failure(&state, &request_id.0, &error),
+                Ok(None) => mutation_error(
                     &request_id.0,
                     StatusCode::NOT_FOUND,
                     "user_not_found",
@@ -653,12 +618,7 @@ pub(crate) async fn set_person_status(
         Ok(Some(PersonMutation::Role)) | Ok(Some(PersonMutation::PasswordReset)) => {
             unreachable!("status mutation only produces status outcomes")
         }
-        Err(_) => mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        ),
+        Err(error) => storage_failure(&state, &request_id.0, &error),
     }
 }
 
@@ -716,14 +676,7 @@ pub(crate) async fn reset_person_password(
     };
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let outcome: Result<Option<PersonMutation>, sqlx::Error> = async {
         let Some((username, _, _)) = load_user_for_mutation(&mut tx, &user_id).await? else {
@@ -751,13 +704,8 @@ pub(crate) async fn reset_person_password(
     .await;
     match outcome {
         Ok(Some(PersonMutation::PasswordReset)) => {
-            if tx.commit().await.is_err() {
-                return mutation_error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "server database is unavailable",
-                );
+            if let Err(error) = tx.commit().await {
+                return storage_failure(&state, &request_id.0, &error);
             }
             state
                 .admin_realtime()
@@ -776,12 +724,7 @@ pub(crate) async fn reset_person_password(
         Ok(Some(PersonMutation::Protected)) => {
             unreachable!("password reset never triggers final-Owner protection")
         }
-        Err(_) => mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        ),
+        Err(error) => storage_failure(&state, &request_id.0, &error),
     }
 }
 
@@ -852,12 +795,7 @@ pub(crate) async fn sessions_list(
                 .collect(),
         })
         .into_response(),
-        Err(_) => mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        ),
+        Err(error) => storage_failure(&state, &request_id.0, &error),
     }
 }
 
@@ -890,14 +828,7 @@ pub(crate) async fn revoke_session(
     }
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let outcome: Result<RevokeOutcome, sqlx::Error> = async {
         let username = sqlx::query_scalar::<_, String>(
@@ -942,13 +873,8 @@ pub(crate) async fn revoke_session(
     .await;
     match outcome {
         Ok(RevokeOutcome::Revoked { revoked_at }) => {
-            if tx.commit().await.is_err() {
-                return mutation_error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "server database is unavailable",
-                );
+            if let Err(error) = tx.commit().await {
+                return storage_failure(&state, &request_id.0, &error);
             }
             state
                 .admin_realtime()
@@ -971,12 +897,7 @@ pub(crate) async fn revoke_session(
             "session_not_found",
             "session not found",
         ),
-        Err(_) => mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        ),
+        Err(error) => storage_failure(&state, &request_id.0, &error),
     }
 }
 
@@ -1005,14 +926,7 @@ pub(crate) async fn revoke_other_sessions(
     }
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let outcome: Result<i64, sqlx::Error> = async {
         let result = sqlx::query(
@@ -1048,13 +962,8 @@ pub(crate) async fn revoke_other_sessions(
     .await;
     match outcome {
         Ok(count) => {
-            if tx.commit().await.is_err() {
-                return mutation_error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "server database is unavailable",
-                );
+            if let Err(error) = tx.commit().await {
+                return storage_failure(&state, &request_id.0, &error);
             }
             state
                 .admin_realtime()
@@ -1064,12 +973,7 @@ pub(crate) async fn revoke_other_sessions(
             })
             .into_response()
         }
-        Err(_) => mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        ),
+        Err(error) => storage_failure(&state, &request_id.0, &error),
     }
 }
 
@@ -1143,12 +1047,7 @@ pub(crate) async fn audit_list(
                 .flatten();
             Json(AuditResponse { items, next_before }).into_response()
         }
-        Err(_) => mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        ),
+        Err(error) => storage_failure(&state, &request_id.0, &error),
     }
 }
 
@@ -1173,12 +1072,7 @@ pub(crate) async fn get_access_settings(
             authorization_generation: generation,
         })
         .into_response(),
-        Err(_) => mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        ),
+        Err(error) => storage_failure(&state, &request_id.0, &error),
     }
 }
 
@@ -1236,14 +1130,7 @@ pub(crate) async fn set_access_settings(
     }
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let outcome: Result<Option<i64>, sqlx::Error> = async {
         let current = sqlx::query_scalar::<_, String>(
@@ -1298,22 +1185,10 @@ pub(crate) async fn set_access_settings(
     let generation = match outcome {
         Ok(Some(generation)) => generation,
         Ok(None) => unreachable!("access transition always returns a generation"),
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
-    if tx.commit().await.is_err() {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        );
+    if let Err(error) = tx.commit().await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     state
         .admin_realtime()

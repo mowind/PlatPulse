@@ -186,12 +186,7 @@ pub(crate) async fn admin_agent_removal_preview(
             "agent_not_found",
             "agent not found",
         ),
-        Err(_) => mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        ),
+        Err(error) => storage_failure(&state, &request_id.0, &error),
     }
 }
 
@@ -304,11 +299,6 @@ pub(crate) async fn remove_agent(
             "ownership_changed",
             "the Agent's owned Nodes changed; refetch and confirm again",
         ),
-        Err(_) => mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        ),
+        Err(error) => storage_failure(&state, &request_id.0, &error),
     }
 }

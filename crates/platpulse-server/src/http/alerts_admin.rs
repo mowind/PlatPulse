@@ -29,7 +29,7 @@ use crate::alerts::{
     rule_schema, validate_condition,
 };
 use crate::auth::{format_rfc3339, now_utc, parse_rfc3339};
-use crate::http::admin::{mutation_error, mutation_guard_ok};
+use crate::http::admin::{mutation_error, mutation_guard_ok, storage_failure};
 use crate::http::{AppState, AuthenticatedSession, RequestId};
 use crate::metric_history::canonical_instant;
 
@@ -851,28 +851,14 @@ pub(crate) async fn alert_rules(
 ) -> Response {
     let open_counts = match open_incident_counts(state.db().pool()).await {
         Ok(counts) => counts,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let mut rules = Vec::new();
     for definition in CATALOG {
         let row = match load_rule_row(state.db().pool(), definition.key).await {
             Ok(Some(row)) => row,
             Ok(None) => continue,
-            Err(_) => {
-                return mutation_error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "Server database is unavailable",
-                );
-            }
+            Err(error) => return storage_failure(&state, &request_id.0, &error),
         };
         let (enabled, severity, version, condition_json, created_at, updated_at) = row;
         let condition: RuleCondition = match serde_json::from_str(&condition_json) {
@@ -881,14 +867,7 @@ pub(crate) async fn alert_rules(
         };
         let evaluation = match rule_evaluation_summary(state.db().pool(), definition.key).await {
             Ok(summary) => summary,
-            Err(_) => {
-                return mutation_error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "Server database is unavailable",
-                );
-            }
+            Err(error) => return storage_failure(&state, &request_id.0, &error),
         };
         rules.push(AlertRuleSummary {
             rule_key: definition.key.to_owned(),
@@ -924,14 +903,7 @@ pub(crate) async fn alert_rule_detail(
 ) -> Response {
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let outcome: Result<Option<AlertRuleDetail>, AlertError> = async {
         let Some((enabled, severity, version, condition_json, created_at, updated_at)) =
@@ -979,12 +951,7 @@ pub(crate) async fn alert_rule_detail(
             "alert_rule_not_found",
             "unknown alert rule",
         ),
-        Err(AlertError::Database(_)) => mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        ),
+        Err(AlertError::Database(error)) => storage_failure(&state, &request_id.0, &error),
         Err(AlertError::Validation(message)) => (
             StatusCode::BAD_REQUEST,
             Json(crate::http::ApiErrorBody::with_message(
@@ -1070,14 +1037,7 @@ pub(crate) async fn update_alert_rule(
     }
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let outcome: Result<RuleWriteOutcome<(Box<AlertRuleDetail>, i64)>, AlertError> = async {
         let Some((current_enabled, current_severity, current_version, current_condition, _, _)) =
@@ -1177,13 +1137,8 @@ pub(crate) async fn update_alert_rule(
     .await;
     match outcome {
         Ok(RuleWriteOutcome::Updated((detail, audit_event_id))) => {
-            if tx.commit().await.is_err() {
-                return mutation_error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "Server database is unavailable",
-                );
+            if let Err(error) = tx.commit().await {
+                return storage_failure(&state, &request_id.0, &error);
             }
             state
                 .admin_realtime()
@@ -1214,14 +1169,9 @@ pub(crate) async fn update_alert_rule(
             )
                 .into_response()
         }
-        Err(AlertError::Database(_)) => {
+        Err(AlertError::Database(error)) => {
             let _ = tx.rollback().await;
-            mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            )
+            storage_failure(&state, &request_id.0, &error)
         }
     }
 }
@@ -1301,14 +1251,7 @@ pub(crate) async fn preview_alert_rule(
     };
     let loaded = match load_rule_row(state.db().pool(), &rule_key).await {
         Ok(row) => row,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let Some((current_enabled, current_severity, _, current_condition, _, _)) = loaded else {
         return mutation_error(
@@ -1335,14 +1278,7 @@ pub(crate) async fn preview_alert_rule(
 
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let now = now_utc();
     let outcome: Result<Vec<RulePreviewSubject>, AlertError> = async {
@@ -1473,12 +1409,7 @@ pub(crate) async fn preview_alert_rule(
             subjects,
         })
         .into_response(),
-        Err(AlertError::Database(_)) => mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        ),
+        Err(AlertError::Database(error)) => storage_failure(&state, &request_id.0, &error),
         Err(AlertError::Validation(message)) => (
             StatusCode::BAD_REQUEST,
             Json(crate::http::ApiErrorBody::with_message(
@@ -1601,18 +1532,20 @@ pub(crate) async fn upsert_rule_override(
             "an override must set at least one of enabled, severity, or condition",
         );
     }
-    let target_exists: Option<i64> = if body.scope_kind == "node" {
-        sqlx::query_scalar("SELECT 1 FROM nodes WHERE node_id = $1")
+    let target_exists: Result<Option<i64>, sqlx::Error> = if body.scope_kind == "node" {
+        sqlx::query_scalar::<_, i64>("SELECT 1 FROM nodes WHERE node_id = $1")
             .bind(&body.scope_value)
-            .fetch_one(state.db().pool())
+            .fetch_optional(state.db().pool())
             .await
-            .unwrap_or(None)
     } else {
-        sqlx::query_scalar("SELECT 1 FROM networks WHERE network_key = $1")
+        sqlx::query_scalar::<_, i64>("SELECT 1 FROM networks WHERE network_key = $1")
             .bind(&body.scope_value)
-            .fetch_one(state.db().pool())
+            .fetch_optional(state.db().pool())
             .await
-            .unwrap_or(None)
+    };
+    let target_exists = match target_exists {
+        Ok(row) => row,
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     if target_exists.is_none() {
         return mutation_error(
@@ -1624,14 +1557,7 @@ pub(crate) async fn upsert_rule_override(
     }
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let outcome: Result<RuleWriteOutcome<OverrideRevision>, AlertError> = async {
         // Version-safe override save (issue #204): a stale tab must reload and
@@ -1733,13 +1659,8 @@ pub(crate) async fn upsert_rule_override(
     .await;
     match outcome {
         Ok(RuleWriteOutcome::Updated(OverrideRevision { overrides, version })) => {
-            if tx.commit().await.is_err() {
-                return mutation_error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "Server database is unavailable",
-                );
+            if let Err(error) = tx.commit().await {
+                return storage_failure(&state, &request_id.0, &error);
             }
             state
                 .admin_realtime()
@@ -1759,14 +1680,9 @@ pub(crate) async fn upsert_rule_override(
             let _ = tx.rollback().await;
             rule_write_version_conflict(&request_id.0)
         }
-        Err(AlertError::Database(_)) => {
+        Err(AlertError::Database(error)) => {
             let _ = tx.rollback().await;
-            mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            )
+            storage_failure(&state, &request_id.0, &error)
         }
         Err(AlertError::Validation(message)) => {
             let _ = tx.rollback().await;
@@ -1820,14 +1736,7 @@ pub(crate) async fn delete_rule_override(
     }
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let outcome: Result<Option<(Vec<RuleOverrideDto>, i64)>, AlertError> = async {
         let Some((_, current_severity, current_version, current_condition, _, _)) =
@@ -1905,13 +1814,8 @@ pub(crate) async fn delete_rule_override(
     .await;
     match outcome {
         Ok(Some((overrides, version))) => {
-            if tx.commit().await.is_err() {
-                return mutation_error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "Server database is unavailable",
-                );
+            if let Err(error) = tx.commit().await {
+                return storage_failure(&state, &request_id.0, &error);
             }
             state
                 .admin_realtime()
@@ -1932,14 +1836,9 @@ pub(crate) async fn delete_rule_override(
                 "override not found",
             )
         }
-        Err(AlertError::Database(_)) => {
+        Err(AlertError::Database(error)) => {
             let _ = tx.rollback().await;
-            mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            )
+            storage_failure(&state, &request_id.0, &error)
         }
         Err(AlertError::Validation(message)) => {
             let _ = tx.rollback().await;
@@ -2178,26 +2077,12 @@ pub(crate) async fn alert_incidents(
     let sql = crate::database::number_placeholders(&sql);
     let total: i64 = match count_incidents(&state, &where_clause(&conditions), &params).await {
         Ok(count) => count,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let page_total: i64 =
         match count_incidents(&state, &where_clause(&page_conditions), &page_params).await {
             Ok(count) => count,
-            Err(_) => {
-                return mutation_error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "Server database is unavailable",
-                );
-            }
+            Err(error) => return storage_failure(&state, &request_id.0, &error),
         };
     let mut query = sqlx::query_as::<
         _,
@@ -2223,14 +2108,7 @@ pub(crate) async fn alert_incidents(
     }
     let rows = match query.bind(limit).fetch_all(state.db().pool()).await {
         Ok(rows) => rows,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let returned = rows.len() as i64;
     let truncated = page_total > returned;
@@ -2318,14 +2196,7 @@ pub(crate) async fn alert_incident_detail(
     .await
     {
         Ok(row) => row,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let Some((
         rule_key,
@@ -2363,31 +2234,17 @@ pub(crate) async fn alert_incident_detail(
     // Independent evaluation state for the incident's (rule, subject).
     let open_counts = match open_incident_counts(state.db().pool()).await {
         Ok(counts) => counts,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let evaluation = match rule_state_dtos(state.db().pool(), &rule_key, &open_counts).await {
         Ok(states) => states
             .into_iter()
             .find(|state_row| state_row.subject_key == subject_key),
-        Err(_) => None,
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let mut conn = match state.db().pool().acquire().await {
         Ok(conn) => conn,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     // Project the Rule's current effective configuration next to the
     // evaluation row: a disabled Rule keeps history, so the row alone must
@@ -2406,23 +2263,25 @@ pub(crate) async fn alert_incident_detail(
                     condition: rule.condition,
                     version: rule.version,
                 }),
-                Err(_) => {
-                    return mutation_error(
-                        &request_id.0,
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "unavailable",
-                        "Server database is unavailable",
-                    );
-                }
+                Err(error) => return storage_failure(&state, &request_id.0, &error),
             }
         }
         None => None,
     };
     let suppressions = match subject_kind_enum {
         Some(kind) => {
-            crate::alerts::suppressions_for_subject(&mut conn, &rule_key, kind, &subject_key, now)
-                .await
-                .unwrap_or_default()
+            match crate::alerts::suppressions_for_subject(
+                &mut conn,
+                &rule_key,
+                kind,
+                &subject_key,
+                now,
+            )
+            .await
+            {
+                Ok(suppressions) => suppressions,
+                Err(error) => return storage_failure(&state, &request_id.0, &error),
+            }
         }
         None => Vec::new(),
     };
@@ -2493,14 +2352,7 @@ pub(crate) async fn acknowledge_incident(
     }
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let exists: Option<(String,)> =
         match sqlx::query_as("SELECT incident_id FROM alert_incidents WHERE incident_id = $1")
@@ -2509,14 +2361,7 @@ pub(crate) async fn acknowledge_incident(
             .await
         {
             Ok(row) => row,
-            Err(_) => {
-                return mutation_error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "Server database is unavailable",
-                );
-            }
+            Err(error) => return storage_failure(&state, &request_id.0, &error),
         };
     if exists.is_none() {
         return mutation_error(
@@ -2540,14 +2385,7 @@ pub(crate) async fn acknowledge_incident(
     .await
     {
         Ok(result) => result.rows_affected() > 0,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let stored = match sqlx::query_as::<_, (Option<String>, String, String)>(
         "SELECT acknowledged_by_user_id, acknowledged_by_username, acknowledged_at FROM incident_acknowledgments WHERE incident_id = $1",
@@ -2557,14 +2395,7 @@ pub(crate) async fn acknowledge_incident(
     .await
     {
         Ok(row) => row,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let audit_event_id = if recorded {
         let after = serde_json::json!({
@@ -2584,25 +2415,13 @@ pub(crate) async fn acknowledge_incident(
         .await
         {
             Ok(id) => Some(id),
-            Err(_) => {
-                return mutation_error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "Server database is unavailable",
-                );
-            }
+            Err(error) => return storage_failure(&state, &request_id.0, &error),
         }
     } else {
         None
     };
-    if tx.commit().await.is_err() {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
+    if let Err(error) = tx.commit().await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     state
         .admin_realtime()
@@ -2707,14 +2526,7 @@ pub(crate) async fn alert_silences(
     .await
     {
         Ok(rows) => rows,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let now = now_utc();
     let mut silences: Vec<SilenceDto> = rows
@@ -2800,23 +2612,30 @@ pub(crate) async fn create_silence(
         )
             .into_response();
     }
-    let target_exists: Option<i64> = match body.matcher_kind.as_str() {
-        "node" => sqlx::query_scalar("SELECT 1 FROM nodes WHERE node_id = $1")
-            .bind(body.matcher_value.as_deref().unwrap_or_default())
-            .fetch_one(state.db().pool())
-            .await
-            .unwrap_or(None),
-        "network" => sqlx::query_scalar("SELECT 1 FROM networks WHERE network_key = $1")
-            .bind(body.matcher_value.as_deref().unwrap_or_default())
-            .fetch_one(state.db().pool())
-            .await
-            .unwrap_or(None),
-        "agent" => sqlx::query_scalar("SELECT 1 FROM agents WHERE agent_id = $1")
-            .bind(body.matcher_value.as_deref().unwrap_or_default())
-            .fetch_one(state.db().pool())
-            .await
-            .unwrap_or(None),
-        _ => Some(1),
+    let target_exists: Result<Option<i64>, sqlx::Error> = match body.matcher_kind.as_str() {
+        "node" => {
+            sqlx::query_scalar::<_, i64>("SELECT 1 FROM nodes WHERE node_id = $1")
+                .bind(body.matcher_value.as_deref().unwrap_or_default())
+                .fetch_optional(state.db().pool())
+                .await
+        }
+        "network" => {
+            sqlx::query_scalar::<_, i64>("SELECT 1 FROM networks WHERE network_key = $1")
+                .bind(body.matcher_value.as_deref().unwrap_or_default())
+                .fetch_optional(state.db().pool())
+                .await
+        }
+        "agent" => {
+            sqlx::query_scalar::<_, i64>("SELECT 1 FROM agents WHERE agent_id = $1")
+                .bind(body.matcher_value.as_deref().unwrap_or_default())
+                .fetch_optional(state.db().pool())
+                .await
+        }
+        _ => Ok(Some(1)),
+    };
+    let target_exists = match target_exists {
+        Ok(row) => row,
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     if target_exists.is_none() {
         return mutation_error(
@@ -2828,18 +2647,11 @@ pub(crate) async fn create_silence(
     }
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let now_text = format_rfc3339(now_utc());
     let silence_id = uuid::Uuid::new_v4().to_string();
-    if sqlx::query(
+    if let Err(error) = sqlx::query(
         "INSERT INTO silences (silence_id, matcher_kind, matcher_value, reason, starts_at, ends_at, created_by, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(&silence_id)
@@ -2851,15 +2663,8 @@ pub(crate) async fn create_silence(
     .bind(&principal.0.user_id)
     .bind(&now_text)
     .execute(&mut *tx)
-    .await
-    .is_err()
-    {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
+    .await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     let after = serde_json::json!({
         "matcher_kind": body.matcher_kind,
@@ -2879,22 +2684,10 @@ pub(crate) async fn create_silence(
     .await
     {
         Ok(id) => id,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
-    if tx.commit().await.is_err() {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
+    if let Err(error) = tx.commit().await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     state
         .admin_realtime()
@@ -2938,14 +2731,7 @@ pub(crate) async fn alert_silence_detail(
     .await
     {
         Ok(row) => row,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let Some((
         matcher_kind,
@@ -3006,14 +2792,7 @@ pub(crate) async fn cancel_silence(
     }
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let now = now_utc();
     let now_text = format_rfc3339(now);
@@ -3025,14 +2804,7 @@ pub(crate) async fn cancel_silence(
     .await
     {
         Ok(row) => row,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let Some((
         matcher_kind,
@@ -3069,20 +2841,16 @@ pub(crate) async fn cancel_silence(
             "Silence already expired",
         );
     }
-    if sqlx::query("UPDATE silences SET cancelled_at = $1, cancelled_by = $2 WHERE silence_id = $3")
-        .bind(&now_text)
-        .bind(&principal.0.user_id)
-        .bind(&silence_id)
-        .execute(&mut *tx)
-        .await
-        .is_err()
+    if let Err(error) = sqlx::query(
+        "UPDATE silences SET cancelled_at = $1, cancelled_by = $2 WHERE silence_id = $3",
+    )
+    .bind(&now_text)
+    .bind(&principal.0.user_id)
+    .bind(&silence_id)
+    .execute(&mut *tx)
+    .await
     {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
+        return storage_failure(&state, &request_id.0, &error);
     }
     let audit_event_id = match crate::auth::insert_audit_event(
         &mut *tx,
@@ -3095,22 +2863,10 @@ pub(crate) async fn cancel_silence(
     .await
     {
         Ok(id) => id,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
-    if tx.commit().await.is_err() {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
+    if let Err(error) = tx.commit().await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     state
         .admin_realtime()
@@ -3226,14 +2982,7 @@ pub(crate) async fn alert_maintenance(
     .await
     {
         Ok(rows) => rows,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let now = now_utc();
     let mut windows: Vec<MaintenanceDto> = rows
@@ -3332,23 +3081,30 @@ pub(crate) async fn create_maintenance_window(
         )
             .into_response();
     }
-    let target_exists: Option<i64> = match body.scope_kind.as_str() {
-        "node" => sqlx::query_scalar("SELECT 1 FROM nodes WHERE node_id = $1")
-            .bind(&body.scope_value)
-            .fetch_one(state.db().pool())
-            .await
-            .unwrap_or(None),
-        "network" => sqlx::query_scalar("SELECT 1 FROM networks WHERE network_key = $1")
-            .bind(&body.scope_value)
-            .fetch_one(state.db().pool())
-            .await
-            .unwrap_or(None),
-        "agent" => sqlx::query_scalar("SELECT 1 FROM agents WHERE agent_id = $1")
-            .bind(&body.scope_value)
-            .fetch_one(state.db().pool())
-            .await
-            .unwrap_or(None),
-        _ => Some(1),
+    let target_exists: Result<Option<i64>, sqlx::Error> = match body.scope_kind.as_str() {
+        "node" => {
+            sqlx::query_scalar::<_, i64>("SELECT 1 FROM nodes WHERE node_id = $1")
+                .bind(&body.scope_value)
+                .fetch_optional(state.db().pool())
+                .await
+        }
+        "network" => {
+            sqlx::query_scalar::<_, i64>("SELECT 1 FROM networks WHERE network_key = $1")
+                .bind(&body.scope_value)
+                .fetch_optional(state.db().pool())
+                .await
+        }
+        "agent" => {
+            sqlx::query_scalar::<_, i64>("SELECT 1 FROM agents WHERE agent_id = $1")
+                .bind(&body.scope_value)
+                .fetch_optional(state.db().pool())
+                .await
+        }
+        _ => Ok(Some(1)),
+    };
+    let target_exists = match target_exists {
+        Ok(row) => row,
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     if target_exists.is_none() {
         return mutation_error(
@@ -3360,20 +3116,13 @@ pub(crate) async fn create_maintenance_window(
     }
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let now_text = format_rfc3339(now_utc());
     let window_id = uuid::Uuid::new_v4().to_string();
     let expected_json =
         serde_json::to_string(&body.expected_rule_keys).expect("rule keys serialize");
-    if sqlx::query(
+    if let Err(error) = sqlx::query(
         "INSERT INTO maintenance_windows (window_id, scope_kind, scope_value, expected_rule_keys, reason, starts_at, ends_at, created_by, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(&window_id)
@@ -3386,15 +3135,8 @@ pub(crate) async fn create_maintenance_window(
     .bind(&principal.0.user_id)
     .bind(&now_text)
     .execute(&mut *tx)
-    .await
-    .is_err()
-    {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
+    .await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     let audit_event_id = match crate::auth::insert_audit_event(
         &mut *tx,
@@ -3414,22 +3156,10 @@ pub(crate) async fn create_maintenance_window(
     .await
     {
         Ok(id) => id,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
-    if tx.commit().await.is_err() {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
+    if let Err(error) = tx.commit().await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     state
         .admin_realtime()
@@ -3475,14 +3205,7 @@ pub(crate) async fn alert_maintenance_detail(
     .await
     {
         Ok(row) => row,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let Some(row) = row else {
         return mutation_error(
@@ -3520,14 +3243,7 @@ pub(crate) async fn cancel_maintenance_window(
     }
     let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let now = now_utc();
     let now_text = format_rfc3339(now);
@@ -3539,14 +3255,7 @@ pub(crate) async fn cancel_maintenance_window(
     .await
     {
         Ok(row) => row,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
     let Some(mut dto) = row.map(maintenance_dto) else {
         return mutation_error(
@@ -3572,7 +3281,7 @@ pub(crate) async fn cancel_maintenance_window(
             "Maintenance Window already expired",
         );
     }
-    if sqlx::query(
+    if let Err(error) = sqlx::query(
         "UPDATE maintenance_windows SET cancelled_at = $1, cancelled_by = $2 WHERE window_id = $3",
     )
     .bind(&now_text)
@@ -3580,14 +3289,8 @@ pub(crate) async fn cancel_maintenance_window(
     .bind(&window_id)
     .execute(&mut *tx)
     .await
-    .is_err()
     {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
+        return storage_failure(&state, &request_id.0, &error);
     }
     let audit_event_id = match crate::auth::insert_audit_event(
         &mut *tx,
@@ -3600,22 +3303,10 @@ pub(crate) async fn cancel_maintenance_window(
     .await
     {
         Ok(id) => id,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(error) => return storage_failure(&state, &request_id.0, &error),
     };
-    if tx.commit().await.is_err() {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
+    if let Err(error) = tx.commit().await {
+        return storage_failure(&state, &request_id.0, &error);
     }
     state
         .admin_realtime()
