@@ -8,7 +8,6 @@ use axum::extract::{Extension, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use sha2::{Digest, Sha256};
-use sqlx::FromRow;
 
 use crate::enrollment::AgentAuthInfo;
 use crate::http::{AppState, RequestId};
@@ -22,16 +21,7 @@ use platpulse_core::{
 };
 
 use super::*;
-use crate::block_history::{NodeAdmission, Refusal, admit, observe_gap_settlement};
-
-#[derive(Debug, FromRow)]
-struct AgentRow {
-    agent_epoch: i64,
-    active_boot_id: Option<String>,
-    active_boot_status: String,
-    last_report_sequence: Option<i64>,
-    last_inventory_revision: i64,
-}
+use crate::block_history::{Refusal, admit, observe_gap_settlement};
 
 /// The Receipt line for one sample: terminal exactly when admission refused it.
 fn disposition(
@@ -236,41 +226,18 @@ async fn ingest_report<I: ReportInventory>(
         }
     };
 
-    match find_replay::<I>(&mut tx, &auth.agent_id, parsed.report_id, &hash).await {
-        Ok(None) => {}
-        Ok(Some(replay)) => return replay.into_response(&request_id.0),
-        Err(failure) => {
-            return storage_failure(&state, &request_id.0, "read stored receipt", &failure);
+    let admission = match admit_report(&mut tx, &auth.agent_id, &parsed, &hash, cutover).await {
+        Ok(ReportVerdict::Admitted(admission)) => admission,
+        Ok(ReportVerdict::Replay(replay)) => return replay.into_response(&request_id.0),
+        Ok(ReportVerdict::Refused(ReportRefusal::NotReplayable)) => {
+            return error(
+                &request_id.0,
+                StatusCode::CONFLICT,
+                "report_not_replayable",
+                "Frozen v1 Reports are replay-only after the Inventory cutover; new Reports must use protocol v2",
+            );
         }
-    }
-    // After the coordinated cutover the frozen v1 route is replay-only. An
-    // unseen v1 Report is explicitly unsupported: it creates no acceptance
-    // Receipt, advances no Boot, allocates no revision and changes no
-    // projection. It is not mixed-version ingestion, an automatic downgrade or
-    // an old-backlog submission path (design 15.10.5).
-    if cutover.v1_replay_only()
-        && I::protocol_version() != platpulse_core::protocol::PROTOCOL_VERSION_V2
-    {
-        return error(
-            &request_id.0,
-            StatusCode::CONFLICT,
-            "report_not_replayable",
-            "Frozen v1 Reports are replay-only after the Inventory cutover; new Reports must use protocol v2",
-        );
-    }
-    // A removed Agent carries the durable removal boundary (design §15.2,
-    // #171). Reading the row inside the receipt transaction with the live
-    // predicate makes a late report fail exactly like an invalid credential,
-    // so no later Inventory, retry, or restart can reconstruct its Nodes.
-    let agent = match sqlx::query_as::<_, AgentRow>(
-        "SELECT agent_epoch, active_boot_id, active_boot_status, last_report_sequence, last_inventory_revision FROM agents WHERE agent_id = $1 AND deleted_at IS NULL",
-    )
-    .bind(&auth.agent_id)
-    .fetch_optional(&mut *tx)
-    .await
-    {
-        Ok(Some(row)) => row,
-        Ok(None) => {
+        Ok(ReportVerdict::Refused(ReportRefusal::AgentRemoved)) => {
             return error(
                 &request_id.0,
                 StatusCode::UNAUTHORIZED,
@@ -278,313 +245,35 @@ async fn ingest_report<I: ReportInventory>(
                 "Agent credential is invalid",
             );
         }
-        Err(_) => {
-            return error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
+        Ok(ReportVerdict::Refused(ReportRefusal::SequenceTaken)) => {
+            return refuse_sequence_taken(&state, tx, &auth.agent_id, &request_id.0).await;
         }
-    };
-    if parsed.agent_epoch != agent.agent_epoch as u64 {
-        return store_rejected(
-            &state,
-            tx,
-            &parsed,
-            hash.clone(),
-            rejected(
-                parsed.report_id,
-                hash,
-                platpulse_core::RejectionCode::StaleBoot,
-                "Agent epoch is stale",
-            ),
-            &request_id.0,
-        )
-        .await;
-    }
-
-    // A failed read must not pass for "this boot was never seen": that would
-    // skip the closed-boot refusal below.
-    let old_boot_status: Option<String> = match sqlx::query_scalar(
-        "SELECT status FROM agent_boots WHERE agent_id=$1 AND agent_epoch=$2 AND boot_id=$3",
-    )
-    .bind(&auth.agent_id)
-    .bind(parsed.agent_epoch as i64)
-    .bind(parsed.boot_id.to_string())
-    .fetch_optional(&mut *tx)
-    .await
-    {
-        Ok(status) => status,
-        Err(failure) => return storage_error(&request_id.0, "read boot status", &failure),
-    };
-    let declared_revision = parsed.inventory.declared_revision();
-    // Frozen v1: the Agent declares its own monotonically increasing revision.
-    if let Some(declared) = declared_revision {
-        if declared < agent.last_inventory_revision as u64 {
-            return store_rejected(
-                &state,
-                tx,
-                &parsed,
-                hash.clone(),
-                rejected(
-                    parsed.report_id,
-                    hash,
-                    platpulse_core::RejectionCode::InventoryRevisionConflict,
-                    "Inventory revision is older than the accepted revision",
-                ),
-                &request_id.0,
-            )
-            .await;
-        }
-    }
-
-    let inventory_hash = parsed.inventory.accepted_sha256();
-    // An Agent without an accepted Inventory stores NULL: no prior hash.
-    let prior_inventory_hash: Option<String> = match sqlx::query_scalar::<_, Option<String>>(
-        "SELECT inventory_sha256 FROM agents WHERE agent_id=$1",
-    )
-    .bind(&auth.agent_id)
-    .fetch_optional(&mut *tx)
-    .await
-    {
-        Ok(hash) => hash.flatten(),
-        Err(_) => {
-            return error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
-    };
-    if let Some(declared) = declared_revision {
-        if declared == agent.last_inventory_revision as u64
-            && prior_inventory_hash.is_some()
-            && prior_inventory_hash.as_deref() != Some(inventory_hash.as_str())
-        {
-            return store_rejected(
-                &state,
-                tx,
-                &parsed,
-                hash.clone(),
-                rejected(
-                    parsed.report_id,
-                    hash,
-                    platpulse_core::RejectionCode::InventoryRevisionConflict,
-                    "Inventory content conflicts at the accepted revision",
-                ),
-                &request_id.0,
-            )
-            .await;
-        }
-    }
-
-    // v2 declares content only: the Server allocates the accepted revision inside
-    // this authoritative transaction. Identical content keeps the accepted
-    // revision; any content change (including A -> B -> A) advances it. The
-    // comparison and allocation commit with the receipt, so concurrent reports
-    // can never allocate the same revision twice.
-    let inventory_unchanged = prior_inventory_hash.as_deref() == Some(inventory_hash.as_str());
-    let effective_inventory_revision: u64 = match declared_revision {
-        Some(declared) => declared,
-        None if inventory_unchanged => agent.last_inventory_revision.max(0) as u64,
-        None => {
-            // The column is a positive signed 64-bit integer, so the ceiling is
-            // i64::MAX even though the arithmetic runs in u64. The checked add
-            // plus the signed-range filter keep exhaustion an explicit refusal
-            // instead of a cast that would wrap negative.
-            let last = agent.last_inventory_revision.max(0) as u64;
-            let Some(next) = last.checked_add(1).filter(|next| *next <= i64::MAX as u64) else {
-                return store_rejected(
-                    &state,
-                    tx,
-                    &parsed,
-                    hash.clone(),
-                    rejected(
-                        parsed.report_id,
-                        hash,
-                        platpulse_core::RejectionCode::InventoryRevisionConflict,
-                        "Inventory revision range is exhausted",
-                    ),
-                    &request_id.0,
-                )
-                .await;
-            };
-            next
-        }
-    };
-
-    // A sequence is unique within one boot. Never silently accept a competing
-    // body. This early read spares a doomed Report its projection work;
-    // store_receipt is the barrier that holds under concurrency.
-    let sequence_conflict = match sqlx::query_scalar::<_, String>(
-        "SELECT report_id FROM agent_report_receipts WHERE agent_id = $1 AND agent_epoch = $2 AND boot_id = $3 AND report_sequence = $4",
-    )
-    .bind(&auth.agent_id)
-    .bind(parsed.agent_epoch as i64)
-    .bind(parsed.boot_id.to_string())
-    .bind(parsed.report_sequence as i64)
-    .fetch_optional(&mut *tx)
-    .await
-    {
-        Ok(taken) => taken,
-        Err(failure) => {
-            return storage_failure(&state, &request_id.0, "read report sequence", &failure);
-        }
-    };
-    if sequence_conflict.is_some() {
-        return refuse_sequence_taken(&state, tx, &auth.agent_id, &request_id.0).await;
-    }
-    if let Some(active) = &agent.active_boot_id {
-        if active != &parsed.boot_id.to_string() {
-            if old_boot_status.as_deref() == Some("closed")
-                && parsed.boot_transition != platpulse_core::BootTransition::DrainedPrevious
+        Ok(ReportVerdict::Rejected(rejection)) => {
+            if rejection.security_event
+                && let Err(failure) = record_security_event(&mut tx, &auth.agent_id).await
             {
-                return store_rejected(
-                    &state,
-                    tx,
-                    &parsed,
-                    hash.clone(),
-                    rejected(
-                        parsed.report_id,
-                        hash,
-                        platpulse_core::RejectionCode::StaleBoot,
-                        "Report belongs to a closed boot; only exact replay is accepted",
-                    ),
-                    &request_id.0,
-                )
-                .await;
+                return storage_failure(&state, &request_id.0, "record security event", &failure);
             }
-            if parsed.boot_transition != platpulse_core::BootTransition::DrainedPrevious
-                || parsed
-                    .previous_boot_id
-                    .as_ref()
-                    .map(ToString::to_string)
-                    .as_deref()
-                    != Some(active.as_str())
-            {
-                if let Err(failure) = record_security_event(&mut tx, &auth.agent_id).await {
-                    return storage_error(&request_id.0, "record security event", &failure);
-                }
-                return store_rejected(
-                    &state,
-                    tx,
-                    &parsed,
-                    hash.clone(),
-                    rejected(
-                        parsed.report_id,
-                        hash,
-                        platpulse_core::RejectionCode::ConflictingBoot,
-                        "Report belongs to a competing boot",
-                    ),
-                    &request_id.0,
-                )
-                .await;
-            }
-            if agent.active_boot_status != "closed" {
-                if let Err(failure) = record_security_event(&mut tx, &auth.agent_id).await {
-                    return storage_error(&request_id.0, "record security event", &failure);
-                }
-                return store_rejected(
-                    &state,
-                    tx,
-                    &parsed,
-                    hash.clone(),
-                    rejected(
-                        parsed.report_id,
-                        hash,
-                        platpulse_core::RejectionCode::ConflictingBoot,
-                        "Previous boot has not completed its closing receipt",
-                    ),
-                    &request_id.0,
-                )
-                .await;
-            }
-        } else if agent.active_boot_status == "closing"
-            || agent.active_boot_status == "closed"
-            || agent
-                .last_report_sequence
-                .is_some_and(|last| parsed.report_sequence <= last as u64)
-        {
             return store_rejected(
                 &state,
                 tx,
                 &parsed,
                 hash.clone(),
-                rejected(
-                    parsed.report_id,
-                    hash,
-                    platpulse_core::RejectionCode::StaleReport,
-                    "Report sequence is not newer than the accepted report",
-                ),
+                rejected(parsed.report_id, hash, rejection.code, rejection.reason),
                 &request_id.0,
             )
             .await;
         }
-    }
-    // Network admission is a whole-report verdict, so it is decided for every
-    // Node before the report writes anything: a sequence gap or a completed
-    // Transfer written ahead of it would be committed together with the
-    // rejection receipt.
-    let mut node_admission = NodeAdmission::default();
-    for node in parsed.inventory.nodes() {
-        // A purged Node ID is a permanent admission boundary (design §15.3,
-        // ADR 0004, issue #170): the Owner already erased this Node's
-        // projection, monitoring history, and Validator Links, and no later
-        // Inventory revision, retry, restart, or background write may
-        // reconstruct them. Reject the entry per Node so a valid sibling in
-        // the same legal report still reports, and do not let a stale or
-        // unknown Network key on the removed ID block the rest of the report.
-        let purged = match crate::node_purge::is_purged(&mut tx, &node.node_id.to_string()).await {
-            Ok(value) => value,
-            Err(_) => {
-                return error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "Server database is unavailable",
-                );
-            }
-        };
-        if purged {
-            node_admission.refuse_purged(node.node_id);
-            continue;
-        }
-        let known = match sqlx::query_scalar::<_, String>(
-            "SELECT network_key FROM networks WHERE network_key = $1",
-        )
-        .bind(node.network_key.as_str())
-        .fetch_optional(&mut *tx)
-        .await
-        {
-            Ok(v) => v,
-            Err(_) => {
-                return error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "Server database is unavailable",
-                );
-            }
-        };
-        if known.is_none() {
-            return store_rejected(
-                &state,
-                tx,
-                &parsed,
-                hash.clone(),
-                rejected(
-                    parsed.report_id,
-                    hash,
-                    platpulse_core::RejectionCode::NetworkKeyUnknown,
-                    "Network key is not registered",
-                ),
-                &request_id.0,
-            )
-            .await;
-        }
-    }
+        Err(failure) => return failure.into_response(&state, &request_id.0),
+    };
+    let Admission {
+        agent,
+        declared_revision,
+        inventory_hash,
+        inventory_unchanged,
+        inventory_revision: effective_inventory_revision,
+        nodes: mut node_admission,
+    } = admission;
     // The report is admitted from here on; only per-Node refusals remain.
     if let Some(last) = agent.last_report_sequence
         && parsed.boot_id.to_string() == agent.active_boot_id.as_deref().unwrap_or_default()
@@ -1713,6 +1402,130 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(stored, 0);
+    }
+
+    /// A Report that breaks several rules gets the earliest verdict in the
+    /// admission order. A competing Boot is decided before the revision it
+    /// declares, so the Agent's security signal is not hidden behind an
+    /// Inventory revision conflict.
+    #[tokio::test]
+    pub(super) async fn a_competing_boot_with_an_older_revision_is_a_conflicting_boot() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let mut report: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+        report.report_sequence = 2;
+        report.inventory.revision = 2;
+        report.report_id = "0195f2a1-0043-4043-8043-000000000043".parse().unwrap();
+        submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+
+        report.boot_id = "0195f2a1-0044-4044-8044-000000000044".parse().unwrap();
+        report.report_sequence = 1;
+        report.inventory.revision = 1;
+        report.report_id = "0195f2a1-0045-4045-8045-000000000045".parse().unwrap();
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+        assert_eq!(receipt.disposition, ReceiptDisposition::Rejected);
+        assert_eq!(
+            receipt.rejections[0].code,
+            platpulse_core::RejectionCode::ConflictingBoot
+        );
+        let security_events: i64 =
+            sqlx::query_scalar("SELECT security_event_count FROM agents WHERE agent_id=$1")
+                .bind(&agent_id)
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(security_events, 1);
+    }
+
+    /// The Server allocates a revision only once every fence permits the
+    /// declaration (ADR 0007): an exhausted range must not hide that the
+    /// Report is older than the accepted one.
+    #[tokio::test]
+    pub(super) async fn an_exhausted_revision_does_not_mask_a_stale_report() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let body_a = v2_report_body(
+            "0195f2a1-0221-4221-8221-000000000001",
+            1,
+            1,
+            V2_BOOT_ID,
+            &["ws://127.0.0.1:6790"],
+        );
+        sqlx::query(
+            "UPDATE agents SET last_inventory_revision = $1, inventory_sha256 = $2 WHERE agent_id = $3",
+        )
+        .bind(i64::MAX)
+        .bind(declaration_fingerprint(&body_a))
+        .bind(&agent_id)
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+        submit_v2(&state, &agent_id, body_a).await;
+        let later = v2_report_body(
+            "0195f2a1-0221-4221-8221-000000000003",
+            3,
+            1,
+            V2_BOOT_ID,
+            &["ws://127.0.0.1:6790"],
+        );
+        submit_v2(&state, &agent_id, later).await;
+
+        let stale_and_changed = v2_report_body(
+            "0195f2a1-0221-4221-8221-000000000002",
+            2,
+            1,
+            V2_BOOT_ID,
+            &["ws://127.0.0.1:6791"],
+        );
+        let rejected = submit_v2(&state, &agent_id, stale_and_changed).await;
+        assert_eq!(rejected.disposition, ReceiptDisposition::Rejected);
+        assert_eq!(
+            rejected.rejections[0].code,
+            platpulse_core::RejectionCode::StaleReport
+        );
+    }
+
+    /// Whole-Inventory validation also precedes allocation (ADR 0007): a
+    /// declaration naming an unregistered Network is rejected for that, not
+    /// for the revision it could never have been given.
+    #[tokio::test]
+    pub(super) async fn an_exhausted_revision_does_not_mask_an_unknown_network_key() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let body_a = v2_report_body(
+            "0195f2a1-0222-4222-8222-000000000001",
+            1,
+            1,
+            V2_BOOT_ID,
+            &["ws://127.0.0.1:6790"],
+        );
+        sqlx::query(
+            "UPDATE agents SET last_inventory_revision = $1, inventory_sha256 = $2 WHERE agent_id = $3",
+        )
+        .bind(i64::MAX)
+        .bind(declaration_fingerprint(&body_a))
+        .bind(&agent_id)
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+        submit_v2(&state, &agent_id, body_a).await;
+
+        let mut unknown: serde_json::Value = serde_json::from_slice(&v2_report_body(
+            "0195f2a1-0222-4222-8222-000000000002",
+            2,
+            1,
+            V2_BOOT_ID,
+            &["ws://127.0.0.1:6790"],
+        ))
+        .unwrap();
+        unknown["inventory"]["nodes"][0]["network_key"] = serde_json::json!("unregistered-net");
+        let rejected = submit_v2(&state, &agent_id, serde_json::to_vec(&unknown).unwrap()).await;
+        assert_eq!(rejected.disposition, ReceiptDisposition::Rejected);
+        assert_eq!(
+            rejected.rejections[0].code,
+            platpulse_core::RejectionCode::NetworkKeyUnknown
+        );
     }
 
     #[tokio::test]
