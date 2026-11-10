@@ -1010,7 +1010,7 @@ async fn replay_recorded_test_request(
     let existing = load_notification_request(&mut tx, request_id, now)
         .await
         .map_err(TestSendError::Database)?
-        .ok_or(TestSendError::Unavailable)?;
+        .ok_or(TestSendError::MissingRecord)?;
     if existing.intent_fingerprint != fingerprint {
         let _ = tx.rollback().await;
         return Err(TestSendError::RequestConflict);
@@ -1018,8 +1018,8 @@ async fn replay_recorded_test_request(
     let delivery = load_delivery(&mut tx, &existing.delivery_id)
         .await
         .map_err(TestSendError::Database)?
-        .ok_or(TestSendError::Unavailable)?;
-    let event_id = existing.event_id.ok_or(TestSendError::Unavailable)?;
+        .ok_or(TestSendError::MissingRecord)?;
+    let event_id = existing.event_id.ok_or(TestSendError::MissingRecord)?;
     tx.commit().await.map_err(TestSendError::Database)?;
     Ok(TestSendOutcome {
         event_id,
@@ -1267,7 +1267,8 @@ pub enum TestSendError {
     Disabled,
     /// A database operation behind the test send failed.
     Database(sqlx::Error),
-    Unavailable,
+    /// The request ledger held no row for the recorded request id.
+    MissingRecord,
     /// The Owner-supplied request id was missing or out of bounds.
     InvalidRequestId,
     /// The same request id was reused for a different command intent.

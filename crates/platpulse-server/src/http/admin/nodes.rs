@@ -1477,6 +1477,18 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
+    /// Pin Peer aggregate retention so the fixed receipt buckets below stay
+    /// answerable however far the wall clock has moved past them. This is test
+    /// fixture data; retention cleanup itself is covered by its own tests.
+    async fn pin_peer_retention(state: &AppState) {
+        sqlx::query(
+            "UPDATE retention_policies SET retention_days = 0 WHERE family IN ('peer_aggregate_5m', 'peer_aggregate_1h')",
+        )
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+    }
+
     /// Insert one 5-minute Peer receipt bucket holding a single trusted inbound
     /// Peer: the row shape one successful Report leaves behind.
     async fn insert_peer_bucket(state: &AppState, node_id: &str, bucket_start: &str) {
@@ -1529,6 +1541,7 @@ mod tests {
     #[tokio::test]
     async fn peer_history_answers_one_bounded_range_with_its_own_grid() {
         let (_dir, state) = node_inventory_state().await;
+        pin_peer_retention(&state).await;
         let range_query = |limit: Option<i64>, before: Option<String>| AdminPeerHistoryQuery {
             grain: Some("5m".to_owned()),
             from: Some("2026-08-12T10:00:00Z".to_owned()),
@@ -1587,6 +1600,7 @@ mod tests {
     #[tokio::test]
     async fn peer_history_range_counts_missing_receipts_and_pages_at_a_bucket_boundary() {
         let (_dir, state) = node_inventory_state().await;
+        pin_peer_retention(&state).await;
         for bucket in [
             "2026-08-12T10:00:00Z",
             "2026-08-12T10:05:00Z",

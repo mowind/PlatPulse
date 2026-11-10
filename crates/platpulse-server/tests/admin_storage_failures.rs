@@ -252,6 +252,8 @@ async fn a_constraint_failure_on_an_admin_mutation_is_a_logged_storage_conflict(
         .unwrap_or_else(|| panic!("no admin storage error was logged: {events:?}"));
     assert_eq!(logged["level"], "ERROR");
     assert_eq!(logged["request_id"], request_id.as_str());
+    assert_eq!(logged["route"], "/api/admin/v1/alerts/silences", "{logged}");
+    assert_eq!(logged["route_group"], "admin", "{logged}");
     assert!(
         logged["message"]
             .as_str()
@@ -386,6 +388,31 @@ async fn a_failed_retention_policy_read_is_unavailable_not_a_missing_family() {
     assert_eq!(value["error"]["message"], "Server database is unavailable");
 }
 
+/// An unknown Retention family is still 404 when the read succeeds.
+#[tokio::test]
+async fn an_absent_retention_family_is_still_not_found() {
+    let harness = Harness::boot().await;
+    let owner = login(&harness).await;
+    sqlx::query("DELETE FROM retention_policies WHERE family = 'raw_block_summary'")
+        .execute(harness.pool())
+        .await
+        .unwrap();
+
+    let response = harness
+        .send(admin_put(
+            "/api/admin/v1/retention/policies/raw_block_summary",
+            &owner,
+            r#"{"retentionDays":7,"expectedPolicyVersion":"any"}"#,
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let value = body_json(response).await;
+    assert_eq!(
+        value["error"]["code"], "retention_family_not_found",
+        "{value}"
+    );
+}
+
 /// A Backup artifact that cannot be read is not a missing artifact: the
 /// request answers 503 instead of 404 `backup_artifact_not_found`.
 #[tokio::test]
@@ -408,6 +435,27 @@ async fn a_failed_backup_artifact_read_is_unavailable_not_a_missing_artifact() {
     let value = body_json(response).await;
     assert_eq!(value["error"]["code"], "unavailable", "{value}");
     assert_eq!(value["error"]["message"], "Server database is unavailable");
+}
+
+/// An unknown Backup artifact is still 404 when the read succeeds.
+#[tokio::test]
+async fn an_absent_backup_artifact_is_still_not_found() {
+    let harness = Harness::boot().await;
+    let owner = login(&harness).await;
+
+    let response = harness
+        .send(admin_post(
+            "/api/admin/v1/backups/missing-artifact/verify",
+            &owner,
+            "{}",
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let value = body_json(response).await;
+    assert_eq!(
+        value["error"]["code"], "backup_artifact_not_found",
+        "{value}"
+    );
 }
 
 /// An Admin storage failure caused by a corrupt database page latches the

@@ -314,15 +314,16 @@ pub struct ValidatorLinkListQuery {
     pub node_id: Option<String>,
 }
 
+#[track_caller]
 pub(crate) fn error_response(
     state: &AppState,
     request_id: &str,
     error: ValidatorError,
 ) -> Response {
-    if let ValidatorError::Database(failure) = &error {
-        return storage_failure(state, request_id, failure);
-    }
     let (status, code) = match &error {
+        ValidatorError::Database(failure) => {
+            return storage_failure(state, request_id, failure);
+        }
         ValidatorError::NetworkNotFound
         | ValidatorError::ValidatorNotFound
         | ValidatorError::NodeNotFound
@@ -345,14 +346,10 @@ pub(crate) fn error_response(
         | ValidatorError::InvalidProviderObservation(_)
         | ValidatorError::InvalidTimezone(_)
         | ValidatorError::InvalidTrendWindow(_) => (StatusCode::BAD_REQUEST, "invalid_request"),
-        ValidatorError::Database(_) | ValidatorError::Alert(_) => {
-            (StatusCode::SERVICE_UNAVAILABLE, "unavailable")
-        }
+        ValidatorError::Alert(_) => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
     };
-    let message = match error {
-        ValidatorError::Database(_) | ValidatorError::Alert(_) => {
-            "Server database is unavailable".to_owned()
-        }
+    let message = match &error {
+        ValidatorError::Alert(_) => "Server database is unavailable".to_owned(),
         error => error.to_string(),
     };
     (

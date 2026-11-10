@@ -42,7 +42,7 @@ v0.3.0 adds PostgreSQL as an opt-in Server Storage Backend ([ADR 0013](../../adr
 
 - **What changed:** an Admin request that fails on a database read or write now answers 503 with one of two codes: `storage_conflict` for a unique or check constraint violation, or `unavailable` for any other storage failure. Both messages are fixed ("Server storage rejected the change" / "Server database is unavailable"), the failure is logged at `error` under the request id, and a failed existence read no longer answers 404 or a validation error. Admin diagnostics routes that answered 500 on a database read now answer 503. A `password`-hashing failure, previously mislabelled as a database outage, now answers 500 `internal_error`.
 - **Who is affected:** API clients, scripts or dashboards that branch on the HTTP status or error code of an Admin mutation or diagnostics read.
-- **Action:** treat 503 `storage_conflict` and 503 `unavailable` as a server-side storage failure, not as a missing resource; retry only `unavailable`.
+- **Action:** treat 503 `storage_conflict` and 503 `unavailable` as a server-side storage failure, not as a missing resource. A mutation answered 503 `unavailable` may already have committed when a post-commit read failed, so reload the resource before retrying.
 
 ## Schema migrations
 

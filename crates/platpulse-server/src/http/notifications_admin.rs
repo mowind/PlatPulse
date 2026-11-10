@@ -193,7 +193,7 @@ enum RequestReplayError {
     /// The same request id is recorded for a different command intent.
     Conflict,
     /// The ledger read failed.
-    Unavailable(sqlx::Error),
+    Database(sqlx::Error),
 }
 
 /// Reconcile a mutation's request id against the ledger. `Ok(Some(row))` is a
@@ -209,7 +209,7 @@ async fn resolve_request_replay(
         Ok(Some(row)) if row.intent_fingerprint == fingerprint => Ok(Some(row)),
         Ok(Some(_)) => Err(RequestReplayError::Conflict),
         Ok(None) => Ok(None),
-        Err(error) => Err(RequestReplayError::Unavailable(error)),
+        Err(error) => Err(RequestReplayError::Database(error)),
     }
 }
 
@@ -227,7 +227,7 @@ async fn recorded_retry_replay(
     let mut tx = crate::database::begin(state.db().pool()).await?;
     let replay = match resolve_request_replay(&mut tx, request_id, fingerprint, now).await {
         Err(RequestReplayError::Conflict) => Ok(Some(request_id_conflict(request_id))),
-        Err(RequestReplayError::Unavailable(error)) => Err(error),
+        Err(RequestReplayError::Database(error)) => Err(error),
         Ok(None) => Ok(None),
         Ok(Some(existing)) => match load_delivery(&mut tx, &existing.delivery_id).await {
             Ok(Some(delivery)) => Ok(Some(
@@ -596,7 +596,7 @@ pub(crate) async fn retry_delivery(
             let _ = tx.rollback().await;
             return request_id_conflict(&request_id.0);
         }
-        Err(RequestReplayError::Unavailable(error)) => {
+        Err(RequestReplayError::Database(error)) => {
             let _ = tx.rollback().await;
             return storage_failure(&state, &request_id.0, &error);
         }
@@ -877,7 +877,7 @@ pub(crate) async fn test_notification_channel(
         Err(TestSendError::Database(error)) => {
             return storage_failure(&state, &request_id.0, &error);
         }
-        Err(TestSendError::Unavailable) => return unavailable_error(&request_id.0),
+        Err(TestSendError::MissingRecord) => return unavailable_error(&request_id.0),
     };
     if !outcome.deduplicated {
         state
@@ -1693,6 +1693,21 @@ mod tests {
             json_body(command_id),
         )
         .await
+    }
+
+    #[tokio::test]
+    async fn a_failed_test_notification_ledger_read_is_a_storage_failure() {
+        let (_dir, state, _provider) = test_state().await;
+        sqlx::query("ALTER TABLE notification_requests RENAME TO notification_requests_unreadable")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let response = test_command(&state, "req-db-failure").await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let value = body_json(response).await;
+        assert_eq!(value["error"]["code"], "unavailable", "{value}");
+        assert_eq!(value["error"]["message"], "Server database is unavailable");
     }
 
     #[tokio::test]

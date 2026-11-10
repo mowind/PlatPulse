@@ -1830,6 +1830,44 @@ pub(crate) async fn backup_verify(
 // Restore (issue #51)
 // ---------------------------------------------------------------------------
 
+/// A Restore identity read that failed is never an unknown artifact. Database
+/// failures keep their storage classification; any other failure is logged and
+/// answered as an unreadable artifact, never as a 404.
+#[track_caller]
+fn restore_artifact_read_failure(
+    state: &AppState,
+    request_id: &str,
+    error: crate::restore::RestoreError,
+) -> Response {
+    match &error {
+        crate::restore::RestoreError::Sqlx(failure)
+        | crate::restore::RestoreError::Operation(crate::operations::OperationError::Sqlx(
+            failure,
+        )) => storage_failure(state, request_id, failure),
+        crate::restore::RestoreError::Database(failure) => match failure.as_sqlx() {
+            Some(failure) => storage_failure(state, request_id, failure),
+            None => {
+                tracing::error!(error = %failure, "restore artifact identity read failed");
+                mutation_error(
+                    request_id,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "restore_unavailable",
+                    "backup artifact could not be read",
+                )
+            }
+        },
+        _ => {
+            tracing::error!(error = %error, "restore artifact identity read failed");
+            mutation_error(
+                request_id,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "restore_unavailable",
+                "backup artifact could not be read",
+            )
+        }
+    }
+}
+
 /// Read-only Restore validation: identity selection plus fresh checksum,
 /// integrity, and schema-compatibility verification of the artifact file.
 /// Never writes and never audits; the restore page calls this before the
@@ -1867,16 +1905,8 @@ pub(crate) async fn restore_validate(
                 )
                     .into_response();
             }
-            Err(crate::restore::RestoreError::Sqlx(error)) => {
-                return storage_failure(&state, &request_id.0, &error);
-            }
-            Err(_) => {
-                return mutation_error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "Server database is unavailable",
-                );
+            Err(error) => {
+                return restore_artifact_read_failure(&state, &request_id.0, error);
             }
         };
     let Some(backup_dir) = state.backup_dir().map(|path| path.to_path_buf()) else {
@@ -1973,16 +2003,8 @@ pub(crate) async fn restore_submit(
                 )
                     .into_response();
             }
-            Err(crate::restore::RestoreError::Sqlx(error)) => {
-                return storage_failure(&state, &request_id.0, &error);
-            }
-            Err(_) => {
-                return mutation_error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "Server database is unavailable",
-                );
+            Err(error) => {
+                return restore_artifact_read_failure(&state, &request_id.0, error);
             }
         };
     if !crate::restore::confirmation_matches(&request.confirmation, &identity.filename) {
@@ -2395,7 +2417,14 @@ pub(crate) async fn storage_overview(
             // Re-read instead of reusing the value the open path validated:
             // the Operator opens this surface to see the server that is
             // answering now.
-            let version = db.postgres_server_version().await.ok();
+            let version = match db.postgres_server_version().await {
+                Ok(version) => Some(version),
+                Err(error) => {
+                    state.note_database_error(&error);
+                    tracing::error!(error = %error, "postgres server version read failed");
+                    None
+                }
+            };
             Some(PostgresStorageDto {
                 host: facts.host,
                 port: facts.port,

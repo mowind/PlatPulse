@@ -696,5 +696,49 @@ mod tests {
             "every lifecycle audit row names the Owner actor with redacted details"
         );
     }
+
+    #[tokio::test]
+    async fn admin_agent_audit_reports_storage_failures_as_unavailable() {
+        let (_dir, state) = lifecycle_state().await;
+
+        sqlx::query("ALTER TABLE agents RENAME TO agents_unreadable")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let response = admin_agent_audit(
+            State(state.clone()),
+            Path("agent-lifecycle-test".to_owned()),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let value: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(value["error"]["code"], "unavailable", "{value}");
+
+        sqlx::query("ALTER TABLE agents_unreadable RENAME TO agents")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE audit_events")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let response = admin_agent_audit(
+            State(state.clone()),
+            Path("agent-lifecycle-test".to_owned()),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let value: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(value["error"]["code"], "unavailable", "{value}");
+    }
+
     // ---- Node inventory, metadata, and Network Registry (issue #45) ----
 }
