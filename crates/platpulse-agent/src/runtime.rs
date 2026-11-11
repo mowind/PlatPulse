@@ -5,7 +5,6 @@
 //! shutdown ordering, and the final Closing report.
 
 use std::collections::HashMap;
-#[cfg(test)]
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::{
@@ -20,18 +19,122 @@ use tracing::Instrument as _;
 use crate::block::WebSocketBlockTransport;
 use crate::cli::AgentCliError;
 use crate::collector::{
-    RpcSnapshot, collect_and_persist_precollected_in_store, run_node_block_worker,
+    BlockWorkerExit, RpcSnapshot, collect_and_persist_precollected_in_store, run_node_block_worker,
 };
 use crate::config::{AgentConfig, ValidatedAgentConfig};
+use crate::reporting::ReportTransport;
+
+/// The long-lived worker a failure came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerKind {
+    Report,
+    Delivery,
+    Rpc,
+    DataDirectory,
+    Block,
+}
+
+impl WorkerKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Report => "Agent report collection worker",
+            Self::Delivery => "Agent delivery worker",
+            Self::Rpc => "Node RPC snapshot worker",
+            Self::DataDirectory => "Node data-directory worker",
+            Self::Block => "Node block worker",
+        }
+    }
+}
 
 /// Why the Agent runtime stopped.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RuntimeExit {
-    /// The runtime stopped normally and the Closing report was attempted.
-    Stopped,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExitReason {
+    /// An operator signal or the injected shutdown future fired.
+    Signalled,
+    /// A worker stopped before shutdown, or failed while shutting down.
+    WorkerFailed {
+        kind: WorkerKind,
+        node_id: Option<NodeId>,
+        error: String,
+    },
     /// Shutdown could not reach a safe point; the process must terminate
     /// immediately after flushing logs instead of dropping the Tokio runtime.
     FailClosed { stage: &'static str },
+}
+
+impl ExitReason {
+    /// The operator-facing description of this outcome, before any Closing
+    /// error is appended by RuntimeExit::into_result.
+    pub fn message(&self) -> String {
+        match self {
+            Self::Signalled => "Agent stopped after a shutdown signal".to_owned(),
+            Self::WorkerFailed { kind, error, .. } => {
+                if error == "stopped unexpectedly" {
+                    format!("{} stopped unexpectedly", kind.label())
+                } else {
+                    format!("{} failed: {error}", kind.label())
+                }
+            }
+            Self::FailClosed { stage } => {
+                format!("Agent terminated fail-closed during {stage}")
+            }
+        }
+    }
+}
+
+/// The runtime's complete exit outcome. The CLI decides the process exit code;
+/// this type keeps the root cause separate from later shutdown failures.
+#[derive(Debug)]
+pub struct RuntimeExit {
+    pub reason: ExitReason,
+    pub closing: Option<crate::shutdown::ShutdownOutcome>,
+    pub closing_error: Option<String>,
+    pub delivery_error: Option<AgentCliError>,
+}
+
+impl RuntimeExit {
+    pub fn is_fail_closed(&self) -> bool {
+        matches!(self.reason, ExitReason::FailClosed { .. })
+    }
+
+    /// Map the structured runtime outcome back to the CLI error contract.
+    /// Worker failure is the root cause and is never replaced by a later
+    /// Closing or delivery error; those errors are appended to it instead.
+    pub fn into_result(self) -> Result<(), AgentCliError> {
+        let RuntimeExit {
+            reason,
+            closing_error,
+            delivery_error,
+            ..
+        } = self;
+        let mut suffix = Vec::new();
+        if let Some(error) = closing_error {
+            suffix.push(format!("Closing report failed: {error}"));
+        }
+        if let Some(error) = delivery_error {
+            suffix.push(format!(
+                "Agent delivery worker failed after shutdown: {error}"
+            ));
+        }
+        match reason {
+            ExitReason::Signalled => {
+                if suffix.is_empty() {
+                    Ok(())
+                } else {
+                    Err(AgentCliError::Collection(suffix.join("; ")))
+                }
+            }
+            ExitReason::WorkerFailed { .. } => {
+                let mut message = reason.message();
+                if !suffix.is_empty() {
+                    message.push_str("; ");
+                    message.push_str(&suffix.join("; "));
+                }
+                Err(AgentCliError::Collection(message))
+            }
+            ExitReason::FailClosed { .. } => Err(AgentCliError::Collection(reason.message())),
+        }
+    }
 }
 
 /// Everything the runtime needs from the CLI preflight.
@@ -40,153 +143,312 @@ pub(crate) struct RuntimeInput {
     pub validated: ValidatedAgentConfig,
     pub node_ids: Vec<NodeId>,
     pub write_permit: crate::database::AgentStoreWritePermit,
-    pub shutdown_signals: ShutdownSignals,
     pub drain_deadline: Duration,
     pub sender_deadline: Duration,
 }
 
-pub(crate) async fn run(input: RuntimeInput) -> Result<RuntimeExit, AgentCliError> {
+/// The dependencies handed to one worker set. A worker opens its own Store;
+/// the write permit and the shared Report transport are the only process-wide
+/// handles crossing this seam.
+pub(crate) struct WorkerContext {
+    pub config: AgentConfig,
+    pub validated: ValidatedAgentConfig,
+    pub write_permit: crate::database::AgentStoreWritePermit,
+    pub cancel: tokio_util::sync::CancellationToken,
+    pub send_timeout: Duration,
+    pub transport: Arc<dyn ReportTransport>,
+}
+
+/// A worker result tagged with the Node it belongs to, if any.
+pub(crate) struct GroupedWorker<T> {
+    pub node_id: Option<NodeId>,
+    pub value: T,
+}
+
+/// A join-set of same-kind workers. Keeping the kind in the type makes the
+/// runtime's failure branches explicit instead of one untyped JoinSet.
+pub(crate) struct WorkerGroup<T> {
+    tasks: tokio::task::JoinSet<GroupedWorker<T>>,
+}
+
+impl<T: Send + 'static> WorkerGroup<T> {
+    pub(crate) fn new() -> Self {
+        Self {
+            tasks: tokio::task::JoinSet::new(),
+        }
+    }
+
+    pub(crate) fn spawn<F>(&mut self, node_id: Option<NodeId>, future: F)
+    where
+        F: Future<Output = T> + Send + 'static,
+    {
+        self.tasks.spawn(async move {
+            GroupedWorker {
+                node_id,
+                value: future.await,
+            }
+        });
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.tasks.is_empty()
+    }
+
+    pub(crate) async fn join_next(
+        &mut self,
+    ) -> Option<Result<GroupedWorker<T>, tokio::task::JoinError>> {
+        self.tasks.join_next().await
+    }
+
+    pub(crate) fn abort_all(&mut self) {
+        self.tasks.abort_all();
+    }
+}
+
+/// All workers one Agent runtime supervises.
+pub(crate) struct WorkerSet {
+    pub report: tokio::task::JoinHandle<Result<(), AgentCliError>>,
+    pub delivery: tokio::task::JoinHandle<Result<(), AgentCliError>>,
+    pub rpc: WorkerGroup<()>,
+    pub data_directory: WorkerGroup<()>,
+    pub block: WorkerGroup<BlockWorkerExit>,
+}
+
+/// The real seam for in-process runtime tests: a factory starts every
+/// long-lived worker without opening an RPC connection or a live Server.
+pub(crate) trait WorkerFactory: Send + Sync {
+    fn start(&self, context: WorkerContext) -> Result<WorkerSet, AgentCliError>;
+}
+
+/// The production worker wiring, unchanged from the old run_agent body except
+/// for the shared Report transport injected by the CLI.
+pub(crate) struct ProductionWorkerFactory;
+
+impl WorkerFactory for ProductionWorkerFactory {
+    fn start(&self, context: WorkerContext) -> Result<WorkerSet, AgentCliError> {
+        let WorkerContext {
+            config,
+            validated,
+            write_permit,
+            cancel,
+            send_timeout,
+            transport,
+        } = context;
+
+        let delivery_worker = tokio::spawn(run_delivery_loop(
+            config.clone(),
+            cancel.clone(),
+            write_permit.clone(),
+            send_timeout,
+            transport,
+        ));
+
+        let mut rpc_workers = WorkerGroup::new();
+        let mut rpc_snapshots = Vec::with_capacity(validated.inventory.nodes.len());
+        let rpc_period = Duration::from_secs(config.collection_interval_seconds);
+        for node in &validated.inventory.nodes {
+            let (sender, receiver) = tokio::sync::watch::channel(None);
+            rpc_snapshots.push((node.rpc_endpoint.as_str().to_owned(), receiver));
+            rpc_workers.spawn(
+                Some(node.node_id),
+                run_rpc_snapshot_worker(
+                    node.rpc_endpoint.clone(),
+                    rpc_period,
+                    sender,
+                    cancel.clone(),
+                )
+                .instrument(node_span(&node.node_id)),
+            );
+        }
+
+        let mut data_directory_workers = WorkerGroup::new();
+        let mut data_directory_snapshots = Vec::with_capacity(validated.inventory.nodes.len());
+        for node in &validated.inventory.nodes {
+            let initial = if validated.data_directories.contains_key(&node.node_id) {
+                crate::data_directory::starting_observations(crate::collector::timestamp())
+            } else {
+                crate::data_directory::disabled_observations()
+            };
+            let (sender, receiver) = tokio::sync::watch::channel(initial);
+            data_directory_snapshots.push((node.node_id, receiver));
+            if let Some(path) = validated.data_directories.get(&node.node_id) {
+                data_directory_workers.spawn(
+                    Some(node.node_id),
+                    run_data_directory_worker(path.clone(), sender, cancel.clone())
+                        .instrument(node_span(&node.node_id)),
+                );
+            }
+        }
+
+        let mut block_workers = WorkerGroup::new();
+        for node in validated.inventory.nodes.iter().cloned() {
+            let span = node_span(&node.node_id);
+            block_workers.spawn(
+                Some(node.node_id),
+                run_node_block_worker(
+                    config.clone(),
+                    node,
+                    WebSocketBlockTransport::default(),
+                    cancel.clone(),
+                    write_permit.clone(),
+                )
+                .instrument(span),
+            );
+        }
+
+        let report_worker = tokio::spawn(run_report_collection_loop(
+            config,
+            rpc_snapshots,
+            data_directory_snapshots,
+            cancel,
+            write_permit,
+        ));
+        Ok(WorkerSet {
+            report: report_worker,
+            delivery: delivery_worker,
+            rpc: rpc_workers,
+            data_directory: data_directory_workers,
+            block: block_workers,
+        })
+    }
+}
+
+pub(crate) async fn run<F, S>(
+    factory: &F,
+    shutdown: S,
+    input: RuntimeInput,
+    transport: Arc<dyn ReportTransport>,
+) -> Result<RuntimeExit, AgentCliError>
+where
+    F: WorkerFactory,
+    S: Future<Output = ()>,
+{
     let RuntimeInput {
         config,
         validated,
         node_ids,
         write_permit,
-        mut shutdown_signals,
         drain_deadline,
         sender_deadline,
     } = input;
     let cancel = tokio_util::sync::CancellationToken::new();
+    let WorkerSet {
+        report: mut report_worker,
+        delivery: mut delivery_worker,
+        rpc: mut rpc_workers,
+        data_directory: mut data_directory_workers,
+        block: mut block_workers,
+    } = factory.start(WorkerContext {
+        config: config.clone(),
+        validated,
+        write_permit: write_permit.clone(),
+        cancel: cancel.clone(),
+        send_timeout: sender_deadline,
+        transport: transport.clone(),
+    })?;
 
-    let mut delivery_worker = tokio::spawn(run_delivery_loop(
-        config.clone(),
-        cancel.clone(),
-        write_permit.clone(),
-        sender_deadline,
-    ));
-
-    let mut rpc_workers = tokio::task::JoinSet::new();
-    let mut rpc_snapshots = Vec::with_capacity(validated.inventory.nodes.len());
-    let rpc_period = Duration::from_secs(config.collection_interval_seconds);
-    for node in &validated.inventory.nodes {
-        let (sender, receiver) = tokio::sync::watch::channel(None);
-        rpc_snapshots.push((node.rpc_endpoint.as_str().to_owned(), receiver));
-        rpc_workers.spawn(
-            run_rpc_snapshot_worker(
-                node.rpc_endpoint.clone(),
-                rpc_period,
-                sender,
-                cancel.clone(),
-            )
-            .instrument(node_span(&node.node_id)),
-        );
-    }
-
-    let mut data_directory_workers = tokio::task::JoinSet::new();
-    let mut data_directory_snapshots = Vec::with_capacity(validated.inventory.nodes.len());
-    for node in &validated.inventory.nodes {
-        let initial = if validated.data_directories.contains_key(&node.node_id) {
-            crate::data_directory::starting_observations(crate::collector::timestamp())
-        } else {
-            crate::data_directory::disabled_observations()
-        };
-        let (sender, receiver) = tokio::sync::watch::channel(initial);
-        data_directory_snapshots.push((node.node_id, receiver));
-        if let Some(path) = validated.data_directories.get(&node.node_id) {
-            data_directory_workers.spawn(
-                run_data_directory_worker(path.clone(), sender, cancel.clone())
-                    .instrument(node_span(&node.node_id)),
-            );
-        }
-    }
-
-    let mut block_workers = tokio::task::JoinSet::new();
-    for node in validated.inventory.nodes.iter().cloned() {
-        let span = node_span(&node.node_id);
-        block_workers.spawn(
-            run_node_block_worker(
-                config.clone(),
-                node,
-                WebSocketBlockTransport::default(),
-                cancel.clone(),
-                write_permit.clone(),
-            )
-            .instrument(span),
-        );
-    }
-
-    let shutdown_write_permit = write_permit.clone();
-    let mut report_worker = tokio::spawn(run_report_collection_loop(
-        config.clone(),
-        rpc_snapshots,
-        data_directory_snapshots,
-        cancel.clone(),
-        write_permit,
-    ));
     let mut subscriptions = Vec::with_capacity(node_ids.len());
     let mut report_worker_finished = false;
     let mut delivery_worker_finished = false;
-    let runtime_result = tokio::select! {
-        _ = shutdown_signals.recv() => Ok(()),
+    tokio::pin!(shutdown);
+    let reason = tokio::select! {
+        biased;
+        _ = &mut shutdown => ExitReason::Signalled,
         result = &mut report_worker => {
             report_worker_finished = true;
             match result {
-                Ok(result) => result,
-                Err(error) => Err(AgentCliError::Collection(format!(
-                    "Agent report collection worker failed: {error}"
-                ))),
+                Ok(Ok(())) => ExitReason::WorkerFailed {
+                    kind: WorkerKind::Report,
+                    node_id: None,
+                    error: "stopped unexpectedly".to_owned(),
+                },
+                Ok(Err(error)) => ExitReason::WorkerFailed {
+                    kind: WorkerKind::Report,
+                    node_id: None,
+                    error: error.to_string(),
+                },
+                Err(error) => ExitReason::WorkerFailed {
+                    kind: WorkerKind::Report,
+                    node_id: None,
+                    error: format!("task join failed: {error}"),
+                },
             }
         },
         result = &mut delivery_worker => {
             delivery_worker_finished = true;
             match result {
-                Ok(Ok(())) => Err(AgentCliError::Collection(
-                    "Agent delivery worker stopped unexpectedly".to_owned(),
-                )),
-                Ok(Err(error)) => Err(error),
-                Err(error) => Err(AgentCliError::Collection(format!(
-                    "Agent delivery worker failed: {error}"
-                ))),
+                Ok(Ok(())) => ExitReason::WorkerFailed {
+                    kind: WorkerKind::Delivery,
+                    node_id: None,
+                    error: "stopped unexpectedly".to_owned(),
+                },
+                Ok(Err(error)) => ExitReason::WorkerFailed {
+                    kind: WorkerKind::Delivery,
+                    node_id: None,
+                    error: error.to_string(),
+                },
+                Err(error) => ExitReason::WorkerFailed {
+                    kind: WorkerKind::Delivery,
+                    node_id: None,
+                    error: format!("task join failed: {error}"),
+                },
             }
         },
         exit = rpc_workers.join_next(), if !rpc_workers.is_empty() => {
             match exit {
-                Some(Ok(())) => Err(AgentCliError::Collection(
-                    "Node RPC snapshot worker stopped unexpectedly".to_owned(),
-                )),
-                Some(Err(error)) => Err(AgentCliError::Collection(format!(
-                    "Node RPC snapshot worker failed: {error}"
-                ))),
-                None => Ok(()),
+                Some(Ok(worker)) => ExitReason::WorkerFailed {
+                    kind: WorkerKind::Rpc,
+                    node_id: worker.node_id,
+                    error: "stopped unexpectedly".to_owned(),
+                },
+                Some(Err(error)) => ExitReason::WorkerFailed {
+                    kind: WorkerKind::Rpc,
+                    node_id: None,
+                    error: format!("task join failed: {error}"),
+                },
+                None => ExitReason::Signalled,
             }
-        }
+        },
         exit = data_directory_workers.join_next(), if !data_directory_workers.is_empty() => {
             match exit {
-                Some(Ok(())) => Err(AgentCliError::Collection(
-                    "Node data-directory worker stopped unexpectedly".to_owned(),
-                )),
-                Some(Err(error)) => Err(AgentCliError::Collection(format!(
-                    "Node data-directory worker failed: {error}"
-                ))),
-                None => Ok(()),
+                Some(Ok(worker)) => ExitReason::WorkerFailed {
+                    kind: WorkerKind::DataDirectory,
+                    node_id: worker.node_id,
+                    error: "stopped unexpectedly".to_owned(),
+                },
+                Some(Err(error)) => ExitReason::WorkerFailed {
+                    kind: WorkerKind::DataDirectory,
+                    node_id: None,
+                    error: format!("task join failed: {error}"),
+                },
+                None => ExitReason::Signalled,
             }
-        }
+        },
         exit = block_workers.join_next(), if !block_workers.is_empty() => {
             match exit {
-                Some(Ok(exit)) => {
-                    subscriptions.push(exit.subscription);
-                    match exit.error {
-                        Some(error) => Err(AgentCliError::Collection(error.to_string())),
-                        None => Err(AgentCliError::Collection(
-                            "Node block worker stopped unexpectedly".to_owned(),
-                        )),
+                Some(Ok(worker)) => {
+                    subscriptions.push(worker.value.subscription);
+                    match worker.value.error {
+                        Some(error) => ExitReason::WorkerFailed {
+                            kind: WorkerKind::Block,
+                            node_id: worker.node_id,
+                            error: error.to_string(),
+                        },
+                        None => ExitReason::WorkerFailed {
+                            kind: WorkerKind::Block,
+                            node_id: worker.node_id,
+                            error: "stopped unexpectedly".to_owned(),
+                        },
                     }
                 }
-                Some(Err(error)) => Err(AgentCliError::Collection(format!(
-                    "Node block worker failed: {error}"
-                ))),
-                None => Ok(()),
+                Some(Err(error)) => ExitReason::WorkerFailed {
+                    kind: WorkerKind::Block,
+                    node_id: None,
+                    error: format!("task join failed: {error}"),
+                },
+                None => ExitReason::Signalled,
             }
-        }
+        },
     };
     cancel.cancel();
 
@@ -199,7 +461,7 @@ pub(crate) async fn run(input: RuntimeInput) -> Result<RuntimeExit, AgentCliErro
                     "Agent report collection worker join exceeded the shutdown deadline; aborting after the write fence"
                 );
                 let _shutdown_write_guard = match acquire_shutdown_write_fence(
-                    &shutdown_write_permit,
+                    &write_permit,
                     block_deadline,
                     "report worker",
                 )
@@ -216,7 +478,7 @@ pub(crate) async fn run(input: RuntimeInput) -> Result<RuntimeExit, AgentCliErro
     }
     while !rpc_workers.is_empty() {
         match tokio::time::timeout_at(block_deadline, rpc_workers.join_next()).await {
-            Ok(Some(Ok(()))) | Ok(None) => {}
+            Ok(Some(Ok(_))) | Ok(None) => {}
             Ok(Some(Err(error))) => {
                 tracing::warn!(error = %error, "Node RPC snapshot worker join failed during shutdown");
             }
@@ -229,7 +491,7 @@ pub(crate) async fn run(input: RuntimeInput) -> Result<RuntimeExit, AgentCliErro
     }
     while !data_directory_workers.is_empty() {
         match tokio::time::timeout_at(block_deadline, data_directory_workers.join_next()).await {
-            Ok(Some(Ok(()))) | Ok(None) => {}
+            Ok(Some(Ok(_))) | Ok(None) => {}
             Ok(Some(Err(error))) => {
                 tracing::warn!(error = %error, "Node data-directory worker join failed during shutdown");
             }
@@ -237,8 +499,13 @@ pub(crate) async fn run(input: RuntimeInput) -> Result<RuntimeExit, AgentCliErro
                 tracing::error!(
                     "Node data-directory scan exceeded the shutdown deadline; terminating fail-closed"
                 );
-                return Ok(RuntimeExit::FailClosed {
-                    stage: "data-directory scan",
+                return Ok(RuntimeExit {
+                    reason: ExitReason::FailClosed {
+                        stage: "data-directory scan",
+                    },
+                    closing: None,
+                    closing_error: None,
+                    delivery_error: None,
                 });
             }
         }
@@ -246,16 +513,16 @@ pub(crate) async fn run(input: RuntimeInput) -> Result<RuntimeExit, AgentCliErro
     let mut block_workers_timed_out = false;
     while !block_workers.is_empty() {
         match tokio::time::timeout_at(block_deadline, block_workers.join_next()).await {
-            Ok(Some(Ok(exit))) => {
-                if runtime_result.is_ok() {
-                    if let Some(error) = exit.error {
+            Ok(Some(Ok(worker))) => {
+                if matches!(reason, ExitReason::Signalled) {
+                    if let Some(error) = worker.value.error {
                         tracing::warn!(
                             error = %error,
                             "Node block worker stopped with error during shutdown"
                         );
                     }
                 }
-                subscriptions.push(exit.subscription);
+                subscriptions.push(worker.value.subscription);
             }
             Ok(Some(Err(error))) => {
                 tracing::warn!(error = %error, "Node block worker join failed during shutdown");
@@ -267,7 +534,7 @@ pub(crate) async fn run(input: RuntimeInput) -> Result<RuntimeExit, AgentCliErro
                     "Node block worker join exceeded the shutdown deadline; aborting its supervisor"
                 );
                 let _shutdown_write_guard = match acquire_shutdown_write_fence(
-                    &shutdown_write_permit,
+                    &write_permit,
                     block_deadline,
                     "block worker",
                 )
@@ -285,8 +552,7 @@ pub(crate) async fn run(input: RuntimeInput) -> Result<RuntimeExit, AgentCliErro
     }
     if block_workers_timed_out {
         if let Err(error) =
-            persist_abandoned_block_worker_gaps(&config, &node_ids, shutdown_write_permit.clone())
-                .await
+            persist_abandoned_block_worker_gaps(&config, &node_ids, write_permit.clone()).await
         {
             tracing::error!(error = %error, "Could not persist abandoned block worker gaps");
         }
@@ -304,14 +570,16 @@ pub(crate) async fn run(input: RuntimeInput) -> Result<RuntimeExit, AgentCliErro
     if !delivery_worker_finished {
         match tokio::time::timeout_at(block_deadline, &mut delivery_worker).await {
             Ok(Ok(Ok(()))) => {}
-            Ok(Ok(Err(error))) if runtime_result.is_ok() => delivery_error = Some(error),
+            Ok(Ok(Err(error))) if matches!(reason, ExitReason::Signalled) => {
+                delivery_error = Some(error);
+            }
             Ok(Ok(Err(_))) | Ok(Err(_)) => {}
             Err(_) => {
                 tracing::warn!(
                     "Agent delivery worker join exceeded the shutdown deadline; aborting after the write fence"
                 );
                 let _shutdown_write_guard = match acquire_shutdown_write_fence(
-                    &shutdown_write_permit,
+                    &write_permit,
                     block_deadline,
                     "delivery worker",
                 )
@@ -327,24 +595,32 @@ pub(crate) async fn run(input: RuntimeInput) -> Result<RuntimeExit, AgentCliErro
         }
     }
 
-    let outcome = crate::shutdown::graceful_shutdown_with_permit(
+    let (closing, closing_error) = match crate::shutdown::graceful_shutdown_with_permit(
         &config,
         &mut subscriptions,
         drain_deadline,
         sender_deadline,
-        shutdown_write_permit,
+        write_permit,
+        transport.as_ref(),
     )
     .await
-    .map_err(|error| AgentCliError::Collection(error.to_string()))?;
-    tracing::info!(
-        report_id = %outcome.report_id,
-        outcome = %outcome.shutdown_state,
-        "Agent stopped"
-    );
-    if let Some(error) = delivery_error {
-        return Err(error);
-    }
-    runtime_result.map(|()| RuntimeExit::Stopped)
+    {
+        Ok(outcome) => {
+            tracing::info!(
+                report_id = %outcome.report_id,
+                outcome = %outcome.shutdown_state,
+                "Agent stopped"
+            );
+            (Some(outcome), None)
+        }
+        Err(error) => (None, Some(error.to_string())),
+    };
+    Ok(RuntimeExit {
+        reason,
+        closing,
+        closing_error,
+        delivery_error,
+    })
 }
 
 async fn acquire_shutdown_write_fence(
@@ -361,8 +637,13 @@ async fn acquire_shutdown_write_fence(
             tracing::error!(
                 "Agent {worker_name} could not reach a write-safe shutdown point before the deadline; terminating fail-closed"
             );
-            Err(RuntimeExit::FailClosed {
-                stage: "shutdown write fence",
+            Err(RuntimeExit {
+                reason: ExitReason::FailClosed {
+                    stage: "shutdown write fence",
+                },
+                closing: None,
+                closing_error: None,
+                delivery_error: None,
             })
         }
     }
@@ -635,6 +916,7 @@ async fn run_delivery_loop(
     cancel: tokio_util::sync::CancellationToken,
     write_permit: crate::database::AgentStoreWritePermit,
     send_timeout: Duration,
+    transport: Arc<dyn ReportTransport>,
 ) -> Result<(), AgentCliError> {
     let mut store = crate::database::AgentStore::open_with_write_permit(
         crate::database::AgentDatabaseConfig::new(&config.state_db),
@@ -642,8 +924,6 @@ async fn run_delivery_loop(
     )
     .await
     .map_err(|error| AgentCliError::Collection(error.to_string()))?;
-    let transport = crate::reporting::HttpReportTransport::from_config(&config)
-        .map_err(|error| AgentCliError::Collection(error.to_string()))?;
     let mut tick = periodic_interval(Duration::from_secs(1));
     let mut rejections = RepeatingMessage::new();
     // The delivery tick is 1s: an unreachable Server must not write a line
@@ -669,7 +949,7 @@ async fn run_delivery_loop(
                 // logging.md), and the pass has no bounded duration.
                 let pass = crate::reporting::deliver_backlog_with_send_timeout(
                     &mut store,
-                    &transport,
+                    transport.as_ref(),
                     send_timeout,
                     &cancel,
                     |report_id, rejection| {
@@ -942,6 +1222,333 @@ mod tests {
 
         cancel.cancel();
         task.await.unwrap();
+    }
+
+    fn test_node() -> NodeId {
+        "0195f2a1-0014-4014-8014-000000000014".parse().unwrap()
+    }
+
+    fn test_config(dir: &std::path::Path) -> AgentConfig {
+        let credential = dir.join("credential");
+        crate::credential::write_credential_file(
+            &credential,
+            &format!(
+                "pp_agent_{}_{}",
+                "0195f2a1-0011-4011-8011-000000000011",
+                "a".repeat(64)
+            ),
+        )
+        .unwrap();
+        let db_path = dir.join("agent.db");
+        let config_path = dir.join("agent.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "server_url=\"http://127.0.0.1:9\"\ncredential_file=\"{}\"\nstate_db=\"{}\"\ninventory_revision=1\nnodes=[{{node_id=\"0195f2a1-0014-4014-8014-000000000014\",network_key=\"platon-mainnet\",rpc_endpoint=\"ws://127.0.0.1:6790\"}}]\n",
+                credential.display(),
+                db_path.display()
+            ),
+        )
+        .unwrap();
+        AgentConfig::resolve(&config_path).unwrap()
+    }
+
+    async fn enroll_state(config: &AgentConfig) {
+        let mut store = crate::database::AgentStore::open(
+            crate::database::AgentDatabaseConfig::new(&config.state_db),
+        )
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO agent_state (singleton, agent_id, agent_epoch, boot_id, report_sequence, inventory_revision, updated_at) VALUES (1, ?, 1, ?, 0, 1, ?)")
+            .bind("0195f2a1-0011-4011-8011-000000000011")
+            .bind("0195f2a1-0012-4012-8012-000000000012")
+            .bind("2026-01-01T00:00:00Z")
+            .execute(store.connection())
+            .await
+            .unwrap();
+        store.close().await.unwrap();
+    }
+
+    fn quiet_workers() -> WorkerSet {
+        WorkerSet {
+            report: tokio::spawn(async { Ok::<(), AgentCliError>(()) }),
+            delivery: tokio::spawn(async { Ok::<(), AgentCliError>(()) }),
+            rpc: WorkerGroup::new(),
+            data_directory: WorkerGroup::new(),
+            block: WorkerGroup::new(),
+        }
+    }
+
+    struct FailingBlockFactory {
+        node: NodeId,
+    }
+
+    impl WorkerFactory for FailingBlockFactory {
+        fn start(&self, _context: WorkerContext) -> Result<WorkerSet, AgentCliError> {
+            let mut workers = quiet_workers();
+            workers.report = tokio::spawn(std::future::pending::<Result<(), AgentCliError>>());
+            workers.delivery = tokio::spawn(std::future::pending::<Result<(), AgentCliError>>());
+            let subscription = crate::block::HeadSubscription::new(self.node, 32);
+            workers.block.spawn(Some(self.node), async move {
+                BlockWorkerExit {
+                    subscription,
+                    error: Some(crate::collector::CollectionError::Identity(
+                        "block worker boom".to_owned(),
+                    )),
+                }
+            });
+            Ok(workers)
+        }
+    }
+
+    struct PendingDataDirectoryFactory;
+
+    impl WorkerFactory for PendingDataDirectoryFactory {
+        fn start(&self, _context: WorkerContext) -> Result<WorkerSet, AgentCliError> {
+            let mut workers = quiet_workers();
+            workers
+                .data_directory
+                .spawn(None, std::future::pending::<()>());
+            Ok(workers)
+        }
+    }
+
+    struct RecordingFactory {
+        node: NodeId,
+        events: Arc<std::sync::Mutex<Vec<&'static str>>>,
+        report_ready: Arc<Notify>,
+    }
+
+    impl WorkerFactory for RecordingFactory {
+        fn start(&self, context: WorkerContext) -> Result<WorkerSet, AgentCliError> {
+            let report_cancel = context.cancel.clone();
+            let report_events = Arc::clone(&self.events);
+            let report_ready = Arc::clone(&self.report_ready);
+            let report = tokio::spawn(async move {
+                report_cancel.cancelled().await;
+                report_events.lock().unwrap().push("report");
+                report_ready.notify_one();
+                Ok::<(), AgentCliError>(())
+            });
+
+            let delivery_cancel = context.cancel.clone();
+            let delivery_events = Arc::clone(&self.events);
+            let delivery = tokio::spawn(async move {
+                delivery_cancel.cancelled().await;
+                delivery_events.lock().unwrap().push("delivery");
+                Ok::<(), AgentCliError>(())
+            });
+
+            let mut workers = quiet_workers();
+            workers.report = report;
+            workers.delivery = delivery;
+            let block_events = Arc::clone(&self.events);
+            let block_ready = Arc::clone(&self.report_ready);
+            let subscription = crate::block::HeadSubscription::new(self.node, 32);
+            workers.block.spawn(Some(self.node), async move {
+                block_ready.notified().await;
+                block_events.lock().unwrap().push("block");
+                BlockWorkerExit {
+                    subscription,
+                    error: None,
+                }
+            });
+            Ok(workers)
+        }
+    }
+
+    struct FailingTransport;
+
+    impl ReportTransport for FailingTransport {
+        fn send<'a>(
+            &'a self,
+            _body: &'a [u8],
+        ) -> std::pin::Pin<
+            Box<
+                dyn Future<Output = Result<Vec<u8>, crate::reporting::ReportStoreError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async {
+                Err(crate::reporting::ReportStoreError::Delivery(
+                    "recorded by test transport".to_owned(),
+                ))
+            })
+        }
+    }
+
+    struct RecordingTransport {
+        events: Arc<std::sync::Mutex<Vec<&'static str>>>,
+    }
+
+    impl ReportTransport for RecordingTransport {
+        fn send<'a>(
+            &'a self,
+            _body: &'a [u8],
+        ) -> std::pin::Pin<
+            Box<
+                dyn Future<Output = Result<Vec<u8>, crate::reporting::ReportStoreError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            let events = Arc::clone(&self.events);
+            Box::pin(async move {
+                events.lock().unwrap().push("closing send");
+                Err(crate::reporting::ReportStoreError::Delivery(
+                    "recorded by test transport".to_owned(),
+                ))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_failure_survives_a_closing_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = test_config(dir.path());
+        let validated = config.validated_inventory().unwrap();
+        let node = test_node();
+        let factory = FailingBlockFactory { node };
+        let exit = run(
+            &factory,
+            std::future::pending(),
+            RuntimeInput {
+                config,
+                validated,
+                node_ids: vec![node],
+                write_permit: crate::database::AgentStoreWritePermit::new(),
+                drain_deadline: Duration::from_millis(5),
+                sender_deadline: Duration::from_millis(5),
+            },
+            Arc::new(FailingTransport),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            exit.reason,
+            ExitReason::WorkerFailed {
+                kind: WorkerKind::Block,
+                node_id: Some(ref failed),
+                ..
+            } if *failed == node
+        ));
+        assert!(exit.closing_error.is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn data_directory_timeout_is_fail_closed_without_killing_the_test_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = test_config(dir.path());
+        let validated = config.validated_inventory().unwrap();
+        let exit = run(
+            &PendingDataDirectoryFactory,
+            std::future::ready(()),
+            RuntimeInput {
+                config,
+                validated,
+                node_ids: vec![test_node()],
+                write_permit: crate::database::AgentStoreWritePermit::new(),
+                drain_deadline: Duration::from_millis(1),
+                sender_deadline: Duration::from_millis(1),
+            },
+            Arc::new(FailingTransport),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            exit.reason,
+            ExitReason::FailClosed {
+                stage: "data-directory scan"
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn shutdown_joins_workers_before_sending_the_closing_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = test_config(dir.path());
+        enroll_state(&config).await;
+        let validated = config.validated_inventory().unwrap();
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let factory = RecordingFactory {
+            node: test_node(),
+            events: Arc::clone(&events),
+            report_ready: Arc::new(Notify::new()),
+        };
+        let exit = run(
+            &factory,
+            std::future::ready(()),
+            RuntimeInput {
+                config,
+                validated,
+                node_ids: vec![test_node()],
+                write_permit: crate::database::AgentStoreWritePermit::new(),
+                drain_deadline: Duration::from_millis(50),
+                sender_deadline: Duration::from_millis(50),
+            },
+            Arc::new(RecordingTransport {
+                events: Arc::clone(&events),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(exit.reason, ExitReason::Signalled));
+        assert!(exit.closing.is_some());
+        assert!(exit.closing_error.is_none());
+        let events = events.lock().unwrap();
+        let report = events.iter().position(|event| *event == "report").unwrap();
+        let block = events.iter().position(|event| *event == "block").unwrap();
+        let delivery = events
+            .iter()
+            .position(|event| *event == "delivery")
+            .unwrap();
+        let closing = events
+            .iter()
+            .position(|event| *event == "closing send")
+            .unwrap();
+        assert!(report < block);
+        assert!(block < closing);
+        assert!(delivery < closing);
+    }
+
+    #[tokio::test]
+    async fn shutdown_future_wins_over_a_simultaneous_worker_failure() {
+        struct ImmediateReportFailureFactory;
+
+        impl WorkerFactory for ImmediateReportFailureFactory {
+            fn start(&self, _context: WorkerContext) -> Result<WorkerSet, AgentCliError> {
+                let mut workers = quiet_workers();
+                workers.report = tokio::spawn(async {
+                    Err::<(), AgentCliError>(AgentCliError::Collection("report boom".to_owned()))
+                });
+                Ok(workers)
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = test_config(dir.path());
+        let validated = config.validated_inventory().unwrap();
+        let exit = run(
+            &ImmediateReportFailureFactory,
+            std::future::ready(()),
+            RuntimeInput {
+                config,
+                validated,
+                node_ids: vec![test_node()],
+                write_permit: crate::database::AgentStoreWritePermit::new(),
+                drain_deadline: Duration::from_millis(5),
+                sender_deadline: Duration::from_millis(5),
+            },
+            Arc::new(FailingTransport),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(exit.reason, ExitReason::Signalled));
     }
 
     #[test]

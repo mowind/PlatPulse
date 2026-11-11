@@ -159,7 +159,7 @@ impl ReportTransport for HttpReportTransport {
 }
 
 /// A transport which sends the exact bytes supplied by the durable spool.
-pub trait ReportTransport {
+pub trait ReportTransport: Send + Sync {
     fn send<'a>(
         &'a self,
         body: &'a [u8],
@@ -417,7 +417,7 @@ pub(crate) fn rejection_line(reason: &str) -> String {
 /// the queue drains. It is handed the refused Report's identity and the refusal
 /// condition separately, because the operator-facing line is aggregated on the
 /// condition while the identity stays available as a field.
-pub(crate) async fn deliver_backlog_with_send_timeout<T: ReportTransport>(
+pub(crate) async fn deliver_backlog_with_send_timeout<T: ReportTransport + ?Sized>(
     store: &mut AgentStore,
     transport: &T,
     send_timeout: std::time::Duration,
@@ -429,7 +429,7 @@ pub(crate) async fn deliver_backlog_with_send_timeout<T: ReportTransport>(
 
 /// Deliver until the Agent Store holds no queued Report.
 #[cfg(test)]
-pub(crate) async fn deliver_periodic<T: ReportTransport>(
+pub(crate) async fn deliver_periodic<T: ReportTransport + ?Sized>(
     store: &mut AgentStore,
     transport: &T,
 ) -> Result<DeliveryOutcome, ReportStoreError> {
@@ -447,7 +447,7 @@ pub(crate) async fn deliver_periodic<T: ReportTransport>(
     }
 }
 
-async fn deliver_backlog<T: ReportTransport>(
+async fn deliver_backlog<T: ReportTransport + ?Sized>(
     store: &mut AgentStore,
     transport: &T,
     send_timeout: Option<std::time::Duration>,

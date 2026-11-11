@@ -16,14 +16,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Flush queued diagnostics before the final error is printed.
     platpulse_agent::logging::flush();
     match result {
-        Ok(Some(RuntimeExit::FailClosed { .. })) => {
+        Ok(Some(exit)) if exit.is_fail_closed() => {
             // A fail-closed worker (for example a data-directory scan blocked
             // in a thread that cannot be interrupted) must not be waited on by
             // the Tokio runtime destructor. Leave the process immediately after
             // the log flush above.
             std::process::exit(1);
         }
-        Ok(_) => Ok(()),
+        Ok(Some(exit)) => exit
+            .into_result()
+            .map_err(|error| Box::new(error) as Box<dyn std::error::Error>),
+        Ok(None) => Ok(()),
         Err(error) => Err(error),
     }
 }

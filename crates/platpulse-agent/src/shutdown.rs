@@ -458,12 +458,14 @@ pub async fn graceful_shutdown(
 ) -> Result<ShutdownOutcome, crate::collector::CollectionError> {
     let _runtime_lock = crate::database::AgentRuntimeLock::acquire(&config.state_db)
         .map_err(|error| crate::collector::CollectionError::RuntimeOwnership(error.to_string()))?;
+    let sender = crate::reporting::HttpReportTransport::from_config(config)?;
     graceful_shutdown_with_permit(
         config,
         &mut [],
         sender_deadline,
         sender_deadline,
         crate::database::AgentStoreWritePermit::new(),
+        &sender,
     )
     .await
 }
@@ -474,6 +476,7 @@ pub(crate) async fn graceful_shutdown_with_permit(
     drain_deadline: Duration,
     sender_deadline: Duration,
     write_permit: crate::database::AgentStoreWritePermit,
+    sender: &dyn crate::reporting::ReportTransport,
 ) -> Result<ShutdownOutcome, crate::collector::CollectionError> {
     let mut store = crate::database::AgentStore::open_with_write_permit(
         crate::database::AgentDatabaseConfig::new(&config.state_db),
@@ -490,7 +493,6 @@ pub(crate) async fn graceful_shutdown_with_permit(
     if state.boot_id.is_none() {
         return Err(crate::collector::CollectionError::RecoveryRequired);
     }
-    let sender = crate::reporting::HttpReportTransport::from_config(config)?;
     let started = shutdown_timestamp();
     let deadline = started_at_plus(started, drain_deadline);
     crate::shutdown_record::begin(&mut tx, started, deadline).await?;
@@ -578,7 +580,7 @@ pub(crate) async fn graceful_shutdown_with_permit(
         }
         match crate::spool::send_oldest(
             &mut store,
-            &sender,
+            sender,
             crate::spool::SendBudget::At(send_until),
         )
         .await
