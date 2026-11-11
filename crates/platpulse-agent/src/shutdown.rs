@@ -17,74 +17,9 @@ use platpulse_core::network::NetworkIdentity;
 use platpulse_core::time::Rfc3339;
 
 use tokio::time::timeout_at;
-use tokio_util::sync::CancellationToken;
 
 use crate::block::{HeadSubscription, ResolveError, ResolvedBlock, WebSocketBlockTransport};
-use crate::collector::RpcAdapter;
 use crate::shutdown_record::ShutdownState;
-
-/// Runtime coordinator owning collection intake and the cancellation signal.
-/// A shutdown request first cancels intake, then drains each Node queue, so no
-/// new headers can race with the bounded shutdown drain.
-pub struct AgentRuntime {
-    cancel: CancellationToken,
-}
-
-impl AgentRuntime {
-    pub fn new() -> Self {
-        Self {
-            cancel: CancellationToken::new(),
-        }
-    }
-
-    pub fn cancellation_token(&self) -> CancellationToken {
-        self.cancel.clone()
-    }
-
-    pub fn request_shutdown(&self) {
-        self.cancel.cancel();
-    }
-
-    pub async fn run_until_shutdown<A: RpcAdapter>(
-        &self,
-        config: &crate::config::AgentConfig,
-        adapter: &A,
-        transport: &WebSocketBlockTransport,
-        subscriptions: &mut [HeadSubscription],
-        drain_deadline: Duration,
-        sender_deadline: Duration,
-    ) -> Result<ShutdownOutcome, crate::collector::CollectionError> {
-        let _runtime_lock =
-            crate::database::AgentRuntimeLock::acquire(&config.state_db).map_err(|error| {
-                crate::collector::CollectionError::RuntimeOwnership(error.to_string())
-            })?;
-        let write_permit = crate::database::AgentStoreWritePermit::new();
-        let collection_result = crate::collector::collect_and_persist_with_blocks_with_permit(
-            config,
-            adapter,
-            transport,
-            subscriptions,
-            write_permit.clone(),
-        )
-        .await;
-        collection_result?;
-        graceful_shutdown_with_subscriptions_with_permit(
-            config,
-            adapter,
-            subscriptions,
-            drain_deadline,
-            sender_deadline,
-            write_permit,
-        )
-        .await
-    }
-}
-
-impl Default for AgentRuntime {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 /// Async hash resolver used while draining one Node subscription.
 pub trait AsyncBlockResolver {
@@ -193,7 +128,6 @@ pub fn shutdown_gap(
 mod tests {
     use super::*;
     use crate::block::HeadHeader;
-    use crate::collector::FailClosedRpcAdapter;
     use crate::config::AgentConfig;
     use crate::credential::write_credential_file;
     use crate::database::{AgentDatabaseConfig, AgentStore};
@@ -272,7 +206,7 @@ mod tests {
         }
     }
     #[tokio::test]
-    async fn closing_report_uses_fail_closed_adapter_and_keeps_the_boot_open_when_rejected() {
+    async fn closing_report_keeps_the_boot_open_when_rejected() {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("agent.db");
         let credential = dir.path().join("credential");
@@ -348,15 +282,9 @@ mod tests {
             .bind("2026-01-01T00:00:00Z")
             .execute(store.connection()).await.unwrap();
         store.close().await.unwrap();
-        let outcome = graceful_shutdown_with_subscriptions(
-            &config,
-            &FailClosedRpcAdapter,
-            &mut [],
-            Duration::ZERO,
-            Duration::from_secs(2),
-        )
-        .await
-        .unwrap();
+        let outcome = graceful_shutdown(&config, Duration::from_secs(2))
+            .await
+            .unwrap();
         assert!(outcome.stored);
         assert!(outcome.receipt_applied);
         let mut reopened = AgentStore::open(AgentDatabaseConfig::new(&db_path))
@@ -381,15 +309,6 @@ mod tests {
         assert_eq!(closing, 1);
         reopened.close().await.unwrap();
         server.await.unwrap();
-    }
-
-    #[test]
-    fn cancellation_request_stops_intake_signal() {
-        let runtime = AgentRuntime::new();
-        let token = runtime.cancellation_token();
-        assert!(!token.is_cancelled());
-        runtime.request_shutdown();
-        assert!(token.is_cancelled());
     }
 
     #[test]
@@ -533,31 +452,24 @@ impl AsyncBlockResolver for TransportResolver<'_> {
 
 /// Drain the live Node queues, persist every resolved sample and every
 /// unresolved range, then persist a canonical immutable Closing report.
-pub async fn graceful_shutdown_with_subscriptions<A: crate::collector::RpcAdapter>(
+pub async fn graceful_shutdown(
     config: &crate::config::AgentConfig,
-    adapter: &A,
-    subscriptions: &mut [HeadSubscription],
-    drain_deadline: Duration,
     sender_deadline: Duration,
 ) -> Result<ShutdownOutcome, crate::collector::CollectionError> {
     let _runtime_lock = crate::database::AgentRuntimeLock::acquire(&config.state_db)
         .map_err(|error| crate::collector::CollectionError::RuntimeOwnership(error.to_string()))?;
-    graceful_shutdown_with_subscriptions_with_permit(
+    graceful_shutdown_with_permit(
         config,
-        adapter,
-        subscriptions,
-        drain_deadline,
+        &mut [],
+        sender_deadline,
         sender_deadline,
         crate::database::AgentStoreWritePermit::new(),
     )
     .await
 }
 
-pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
-    A: crate::collector::RpcAdapter,
->(
+pub(crate) async fn graceful_shutdown_with_permit(
     config: &crate::config::AgentConfig,
-    _adapter: &A,
     subscriptions: &mut [HeadSubscription],
     drain_deadline: Duration,
     sender_deadline: Duration,
@@ -578,6 +490,7 @@ pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
     if state.boot_id.is_none() {
         return Err(crate::collector::CollectionError::RecoveryRequired);
     }
+    let sender = crate::reporting::HttpReportTransport::from_config(config)?;
     let started = shutdown_timestamp();
     let deadline = started_at_plus(started, drain_deadline);
     crate::shutdown_record::begin(&mut tx, started, deadline).await?;
@@ -658,7 +571,6 @@ pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
     let mut receipt_applied = false;
     let mut exhausted = false;
     let send_until = tokio::time::Instant::now() + sender_deadline;
-    let sender = crate::reporting::HttpReportTransport::from_config(config)?;
     loop {
         if tokio::time::Instant::now() >= send_until {
             exhausted = true;
@@ -736,40 +648,4 @@ pub(crate) fn started_at_plus(started: Rfc3339, duration: Duration) -> Rfc3339 {
     .expect("shutdown deadline")
     .parse()
     .expect("shutdown deadline")
-}
-
-/// caller owns the periodic/subscription tasks and must stop them before this
-/// one-shot operation; unreceipted bytes remain in the spool on every failure.
-pub async fn graceful_shutdown<A: crate::collector::RpcAdapter>(
-    config: &crate::config::AgentConfig,
-    adapter: &A,
-    sender_deadline: Duration,
-) -> Result<ShutdownOutcome, crate::collector::CollectionError> {
-    let _runtime_lock = crate::database::AgentRuntimeLock::acquire(&config.state_db)
-        .map_err(|error| crate::collector::CollectionError::RuntimeOwnership(error.to_string()))?;
-    graceful_shutdown_with_permit(
-        config,
-        adapter,
-        sender_deadline,
-        crate::database::AgentStoreWritePermit::new(),
-    )
-    .await
-}
-
-pub(crate) async fn graceful_shutdown_with_permit<A: crate::collector::RpcAdapter>(
-    config: &crate::config::AgentConfig,
-    adapter: &A,
-    sender_deadline: Duration,
-    write_permit: crate::database::AgentStoreWritePermit,
-) -> Result<ShutdownOutcome, crate::collector::CollectionError> {
-    let mut subscriptions = Vec::new();
-    graceful_shutdown_with_subscriptions_with_permit(
-        config,
-        adapter,
-        &mut subscriptions,
-        sender_deadline,
-        sender_deadline,
-        write_permit,
-    )
-    .await
 }

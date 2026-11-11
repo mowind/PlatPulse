@@ -17,8 +17,7 @@ use tracing::Instrument as _;
 
 use crate::block::WebSocketBlockTransport;
 use crate::collector::{
-    FailClosedRpcAdapter, RpcSnapshot, collect_and_persist_precollected_in_store,
-    run_node_block_worker,
+    RpcSnapshot, collect_and_persist_precollected_in_store, run_node_block_worker,
 };
 use crate::config::{AgentConfig, AgentConfigFile, generate_node_id};
 use crate::enroll::{EnrollError, enroll_agent_with_permit};
@@ -764,8 +763,7 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
     // declares are swept: a History Gap for any other Node is refused by the
     // contract, so those rows wait until the Node is declared again.
     purge_out_of_contract_block_summaries(&config, &node_ids, write_permit.clone()).await?;
-    let runtime = crate::shutdown::AgentRuntime::new();
-    let cancel = runtime.cancellation_token();
+    let cancel = tokio_util::sync::CancellationToken::new();
 
     let mut delivery_worker = tokio::spawn(run_delivery_loop(
         config.clone(),
@@ -898,7 +896,7 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
             }
         }
     };
-    runtime.request_shutdown();
+    cancel.cancel();
 
     let block_deadline =
         tokio::time::Instant::now() + std::time::Duration::from_millis(args.drain_deadline_ms);
@@ -1025,9 +1023,8 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
         }
     }
 
-    let outcome = crate::shutdown::graceful_shutdown_with_subscriptions_with_permit(
+    let outcome = crate::shutdown::graceful_shutdown_with_permit(
         &config,
-        &adapter,
         &mut subscriptions,
         std::time::Duration::from_millis(args.drain_deadline_ms),
         std::time::Duration::from_millis(args.sender_deadline_ms),
@@ -1245,10 +1242,12 @@ pub async fn run_shutdown(args: &ShutdownArgs) -> Result<(), AgentCliError> {
         .validated_inventory()
         .map_err(|error| AgentCliError::Collection(error.to_string()))?;
     guard_migration_configuration(&config.state_db, &validated).await?;
+    let deadline = std::time::Duration::from_millis(args.deadline_ms);
     let outcome = crate::shutdown::graceful_shutdown_with_permit(
         &config,
-        &FailClosedRpcAdapter,
-        std::time::Duration::from_millis(args.deadline_ms),
+        &mut [],
+        deadline,
+        deadline,
         crate::database::AgentStoreWritePermit::new(),
     )
     .await
