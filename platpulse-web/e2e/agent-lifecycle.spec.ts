@@ -339,9 +339,11 @@ test.describe.serial('Agent lifecycle mutations (one run on desktop-1280)', () =
     await page.getByRole('tab', { name: /^Manage/ }).click()
 
     try {
+      await page.getByRole('button', { name: 'Edit' }).click()
       await page.getByLabel('Display name').fill('E2E Host A Agent')
       await page.getByLabel('Notes').fill('E2E notes for the primary Host')
       await page.getByRole('button', { name: 'Save name and notes' }).click()
+      await page.getByRole('button', { name: 'Confirm save' }).click()
       await expect(page.getByText(/Saved\. The name and notes are Server-owned/)).toBeVisible({
         timeout: 15_000,
       })
@@ -355,9 +357,11 @@ test.describe.serial('Agent lifecycle mutations (one run on desktop-1280)', () =
       await expect(page.getByRole('button', { name: 'Copy Agent ID' })).toBeVisible()
     } finally {
       // Restore the enrolled baseline: no Server-owned name or notes.
+      await page.getByRole('button', { name: 'Edit' }).click()
       await page.getByLabel('Display name').fill('')
       await page.getByLabel('Notes').fill('')
       await page.getByRole('button', { name: 'Save name and notes' }).click()
+      await page.getByRole('button', { name: 'Confirm save' }).click()
       await expect(
         page.getByRole('heading', { level: 1, name: /Agent 0195f2a1/ }),
       ).toBeVisible({ timeout: 15_000 })

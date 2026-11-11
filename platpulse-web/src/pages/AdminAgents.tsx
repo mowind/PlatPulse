@@ -4,8 +4,11 @@ import { Link, useParams } from 'react-router'
 import {
   AdminApiError,
   acknowledgeAgentAttention,
+  adminAgentDetailQueryKey,
+  adminQueryClient,
   createEnrollmentToken,
   createRecoveryToken,
+  fetchAdminAgent,
   removeAgent,
   revokeAgentCredential,
   rotateAgentCredential,
@@ -46,6 +49,15 @@ import {
 } from '../agentEvidence'
 import { EVIDENCE_TONE, EvidenceLead } from '../components/AgentEvidenceLead'
 import { InfoHint } from '../components/InfoHint'
+import { ReadBackNotice } from '../components/ReadBackNotice'
+import { editRoundView, type EditRound } from '../lib/editRound'
+import { readAfterWrite } from '../lib/readAfterWrite'
+import {
+  readBackRecovered,
+  type DetailRead,
+  type DetailReadResult,
+  type ReadBackFailure,
+} from '../lib/readBack'
 import {
   AdminDetailSections,
   DETAIL_LINK,
@@ -685,7 +697,23 @@ export function AdminAgentDetail() {
                   ...draftMarker(drafts.pending),
                   content: (
                     <>
-                      <MetadataPanel agent={data} onSaved={() => void agent.refetch()} />
+                      <MetadataPanel
+                        key={data.agent_id}
+                        agent={data}
+                        csrfToken={csrfToken}
+                        detailRead={{
+                          isError: agent.isError,
+                          errorUpdateCount: agent.errorUpdateCount,
+                          dataUpdatedAt: agent.dataUpdatedAt,
+                        }}
+                        readDetail={() =>
+                          readAfterWrite(
+                            adminQueryClient,
+                            adminAgentDetailQueryKey(generation, data.agent_id),
+                            (context) => fetchAdminAgent(data.agent_id, context.signal),
+                          )
+                        }
+                      />
                       <CredentialsPanel agent={data} onConflictReload={() => void agent.refetch()} />
                       <AgentRemovalPanel
                         agentId={data.agent_id}
@@ -1024,126 +1052,417 @@ function IdentityPanel({ agent }: { agent: AgentDiagnostic }) {
  * display name and notes. The stable Agent ID, observed Host identity,
  * Server-derived liveness, Agent Epoch, and local collection configuration
  * are never editable, and no name is inferred from a Node or diagnostic
- * field. Server-backed and authoritative: success refetches; a failed save
- * keeps the form and reports an actionable error. */
-function MetadataPanel({ agent, onSaved }: { agent: AgentDiagnostic; onSaved: () => void }) {
-  const { status } = useAuth()
-  const csrfToken = status.state === 'authenticated' ? status.csrfToken : ''
-  const [displayName, setDisplayName] = useState(agent.display_name ?? '')
-  const [notes, setNotes] = useState(agent.notes ?? '')
-  const [busy, setBusy] = useState(false)
+ * field.
+ *
+ * Three values stay apart: the Server's current metadata (the only thing the
+ * read view shows), the draft of one edit round (started from the latest
+ * Server value, never overwritten by a background refresh), and the exact
+ * values the Owner confirmed, which is what Confirm sends. A save in flight
+ * locks this editor only, survives a section switch, and is never sent twice.
+ * A written value and a failed read-back after it are two results: the write
+ * is stated as written, and the read-back failure is its own notice that
+ * stays until a later read of this Agent's detail succeeds. */
+type AgentMetadataValue = { displayName: string; notes: string }
+type AgentMetadataUpdate = { displayName: string | null; notes: string | null }
+
+function normalizeAgentMetadata(value: AgentMetadataValue): AgentMetadataUpdate {
+  const displayName = value.displayName.trim()
+  const notes = value.notes.trim()
+  return {
+    displayName: displayName === '' ? null : displayName,
+    notes: notes === '' ? null : notes,
+  }
+}
+
+function sameAgentMetadata(left: AgentMetadataValue, right: AgentMetadataValue): boolean {
+  return left.displayName === right.displayName && left.notes === right.notes
+}
+
+function sameAgentMetadataRequest(left: AgentMetadataUpdate, right: AgentMetadataUpdate): boolean {
+  return left.displayName === right.displayName && left.notes === right.notes
+}
+
+function agentMetadataValueText(value: AgentMetadataValue): string {
+  const displayName = value.displayName.trim()
+  const notes = value.notes.trim()
+  return (
+    'display name ' +
+    (displayName === '' ? 'none (the Agent ID is shown)' : '"' + displayName + '"') +
+    ' and notes ' +
+    (notes === '' ? 'none' : '"' + notes + '"')
+  )
+}
+
+function MetadataPanel({
+  agent,
+  csrfToken,
+  detailRead,
+  readDetail,
+}: {
+  agent: AgentDiagnostic
+  csrfToken: string
+  /** The page's latest read of this Agent's detail. */
+  detailRead: DetailRead
+  /** Reads the authoritative Agent detail again. */
+  readDetail: () => Promise<DetailReadResult>
+}) {
+  const current = { displayName: agent.display_name ?? '', notes: agent.notes ?? '' }
+  // One edit round: the draft and the Server value it started from.
+  const [edit, setEdit] = useState<EditRound<AgentMetadataValue> | null>(null)
+  // The exact value the open confirmation will send.
+  const [confirmed, setConfirmed] = useState<AgentMetadataUpdate | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+  const inFlight = useRef(false)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-
-  // Re-sync with each authoritative projection (refetch, another Owner's
-  // update, or a Server restart). A failed local edit is preserved only
-  // until the next authoritative value arrives.
+  // A read-back that failed after a successful write; lifted only by a later
+  // successful read of this Agent's detail.
+  const [readBackFailure, setReadBackFailure] = useState<ReadBackFailure | null>(null)
+  if (readBackFailure && readBackRecovered(readBackFailure, detailRead)) setReadBackFailure(null)
+  // A read-only retry of this Agent's detail; one at a time.
+  const [reading, setReading] = useState(false)
+  // Re-renders once to move the focus when nothing else changes.
+  const [, setFocusTick] = useState(0)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const formRef = useRef<HTMLFormElement>(null)
+  const displayNameRef = useRef<HTMLInputElement>(null)
+  const notesRef = useRef<HTMLTextAreaElement>(null)
+  const editRef = useRef<HTMLButtonElement>(null)
+  const promptRef = useRef<HTMLSpanElement>(null)
+  const readAgainRef = useRef<HTMLButtonElement>(null)
+  const focusNext = useRef<'input' | 'edit' | 'prompt' | 'readAgain' | null>(null)
   useEffect(() => {
-    setDisplayName(agent.display_name ?? '')
-    setNotes(agent.notes ?? '')
-  }, [agent.display_name, agent.notes])
+    const target = focusNext.current
+    if (!target) return
+    if (panelRef.current?.closest('[hidden]')) {
+      focusNext.current = null
+      return
+    }
+    const element =
+      { input: displayNameRef, edit: editRef, prompt: promptRef, readAgain: readAgainRef }[target].current ??
+      (target === 'edit' ? displayNameRef.current : null)
+    if (element instanceof HTMLButtonElement && element.disabled) return
+    focusNext.current = null
+    element?.focus()
+  })
+
+  // The Server metadata moved while this round was open (another Owner,
+  // another tab). The draft is kept, never overwritten, and a confirmation
+  // given against the earlier values no longer stands. Our own save is
+  // excluded while it is in flight.
+  const { serverMoved, serverHasDraft } = editRoundView({
+    edit,
+    current,
+    submitting,
+    same: sameAgentMetadata,
+    serverHoldsDraft: (serverValue, draft) =>
+      sameAgentMetadataRequest(normalizeAgentMetadata(serverValue), normalizeAgentMetadata(draft)),
+  })
+  if (serverMoved && confirmed !== null) setConfirmed(null)
+  // The detail this edit would start from is not authoritative: its last read
+  // failed (after a write, or on a page refresh) and the values on screen may
+  // be earlier than the Server's. No round may start or save against it.
+  const held = readBackFailure !== null || detailRead.isError
+  if (held && confirmed !== null) setConfirmed(null)
+  const movedNoticeId = 'agent-metadata-server-moved-' + agent.agent_id
+  const holdReasonId = 'agent-metadata-hold-' + agent.agent_id
+
   useReportDraft(
     'agent-metadata',
-    displayName !== (agent.display_name ?? '') || notes !== (agent.notes ?? ''),
+    edit !== null && (confirmed !== null || submitting || (!sameAgentMetadata(edit.draft, edit.base) && !serverHasDraft)),
   )
 
-  async function save(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (busy) return
-    setBusy(true)
-    setError(null)
+  function draftFromFields(): AgentMetadataValue | null {
+    if (edit === null) return null
+    const displayName = displayNameRef.current?.value ?? edit.draft.displayName
+    const notes = notesRef.current?.value ?? edit.draft.notes
+    if (displayName !== edit.draft.displayName || notes !== edit.draft.notes) {
+      setEdit({ ...edit, draft: { displayName, notes } })
+    }
+    return { displayName, notes }
+  }
+
+  function startEdit() {
+    if (held) return
+    setEdit({ draft: current, base: current })
+    setConfirmed(null)
     setMessage(null)
+    setError(null)
+    focusNext.current = 'input'
+  }
+
+  function cancel() {
+    if (inFlight.current) return
+    setEdit(null)
+    setConfirmed(null)
+    setMessage(null)
+    setError(null)
+    focusNext.current = 'edit'
+  }
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (inFlight.current || edit === null || serverMoved || held) return
+    setMessage(null)
+    setError(null)
+    const value = draftFromFields()
+    if (value === null) return
+    const request = normalizeAgentMetadata(value)
+    if (sameAgentMetadataRequest(request, normalizeAgentMetadata(edit.base))) {
+      cancel()
+      return
+    }
+    setConfirmed(request)
+    focusNext.current = 'prompt'
+  }
+
+  async function confirm() {
+    if (inFlight.current || confirmed === null || held) return
+    const value = draftFromFields()
+    const request = value === null ? null : normalizeAgentMetadata(value)
+    if (request === null || !sameAgentMetadataRequest(request, confirmed)) {
+      setConfirmed(null)
+      if (request !== null) focusNext.current = 'input'
+      return
+    }
+    if (formRef.current && !formRef.current.reportValidity()) {
+      setConfirmed(null)
+      return
+    }
+    const update = confirmed
+    inFlight.current = true
+    setSubmitting(true)
+    setError(null)
     try {
-      await updateAgentMetadata(
-        agent.agent_id,
-        displayName.trim() === '' ? null : displayName,
-        notes.trim() === '' ? null : notes,
-        csrfToken,
-      )
+      try {
+        await updateAgentMetadata(agent.agent_id, update.displayName, update.notes, csrfToken)
+      } catch (caught) {
+        // The draft and the confirmation stay, so the Owner can retry it.
+        setError(
+          caught instanceof AdminApiError && caught.code === 'agent_not_found'
+            ? 'This Agent is no longer available.'
+            : caught instanceof Error
+              ? caught.message
+              : 'Unable to save the Agent name and notes',
+        )
+        return
+      }
+      const readBack = await readDetail()
+      const active = document.activeElement
+      if (!active || active === document.body || panelRef.current?.contains(active)) {
+        focusNext.current = readBack.isError ? 'readAgain' : 'edit'
+      }
       setMessage('Saved. The name and notes are Server-owned and visible to every Owner.')
-      onSaved()
-    } catch (caught) {
-      setError(
-        caught instanceof AdminApiError && caught.code === 'agent_not_found'
-          ? 'This Agent is no longer available.'
-          : caught instanceof Error
-            ? caught.message
-            : 'Unable to save the Agent name and notes',
+      setReadBackFailure(
+        readBack.isError
+          ? { errorUpdateCount: readBack.errorUpdateCount, errorUpdatedAt: readBack.errorUpdatedAt }
+          : null,
       )
+      setEdit(null)
+      setConfirmed(null)
     } finally {
-      setBusy(false)
+      inFlight.current = false
+      setSubmitting(false)
+    }
+  }
+
+  /** Reads the Agent again after a failed read-back. It only reads; the
+   *  written values are never sent again. */
+  async function readAgain() {
+    if (reading) return
+    const keepFocus = document.activeElement === readAgainRef.current
+    setReading(true)
+    try {
+      const result = await readDetail()
+      if (!result.isError && keepFocus) {
+        focusNext.current = 'edit'
+        setFocusTick((tick) => tick + 1)
+      }
+    } finally {
+      setReading(false)
     }
   }
 
   return (
     <CardX
+      ref={panelRef}
       size="medium"
       className={CARD_SURFACE}
       header={<h2 className={ADMIN_SECTION_TITLE}>Display name and notes</h2>}
     >
-      <form className="grid max-w-xl gap-3" onSubmit={save}>
-        <div className="flex flex-col gap-1">
-          <label
-            className="text-xs font-medium tracking-wider text-muted-foreground"
-            htmlFor="agent-display-name"
+      <div className="grid max-w-xl gap-3">
+        {edit ? (
+          <form ref={formRef} className="grid gap-3" onSubmit={submit} aria-busy={submitting}>
+            <div className="flex flex-col gap-1">
+              <label
+                className="text-xs font-medium tracking-wider text-muted-foreground"
+                htmlFor="agent-display-name"
+              >
+                Display name
+              </label>
+              <Input
+                ref={displayNameRef}
+                id="agent-display-name"
+                value={edit.draft.displayName}
+                maxLength={128}
+                placeholder="Unnamed Agent (identified by the stable ID)"
+                onChange={(event) => {
+                  setEdit({ ...edit, draft: { ...edit.draft, displayName: event.target.value } })
+                  setConfirmed(null)
+                }}
+                disabled={submitting}
+                aria-describedby={serverMoved ? movedNoticeId : undefined}
+              />
+              <p className="text-xs text-muted-foreground">
+                Optional, at most 128 characters. Clear it to identify the Agent by its stable ID.
+              </p>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label
+                className="text-xs font-medium tracking-wider text-muted-foreground"
+                htmlFor="agent-notes"
+              >
+                Notes
+              </label>
+              <Textarea
+                ref={notesRef}
+                id="agent-notes"
+                value={edit.draft.notes}
+                maxLength={2000}
+                rows={4}
+                placeholder="Optional operational context"
+                onChange={(event) => {
+                  setEdit({ ...edit, draft: { ...edit.draft, notes: event.target.value } })
+                  setConfirmed(null)
+                }}
+                disabled={submitting}
+                aria-describedby={serverMoved ? movedNoticeId : undefined}
+              />
+              <p className="text-xs text-muted-foreground">Optional, at most 2000 characters.</p>
+            </div>
+            {serverMoved && (
+              <p id={movedNoticeId} className="text-xs text-muted-foreground">
+                {serverHasDraft
+                  ? 'The Server now holds this display name and these notes — an earlier attempt or another Owner saved them. Nothing is left to save; Close editor ends this edit.'
+                  : 'The Server now holds ' +
+                    agentMetadataValueText(current) +
+                    ' while you were editing. Your draft is kept and has not been saved; Save is unavailable because the draft was started from the earlier values. Cancel to start again from the current values.'}
+              </p>
+            )}
+            {confirmed !== null ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <span ref={promptRef} tabIndex={-1} className="basis-full text-xs text-muted-foreground outline-none">
+                  Save this Agent's Server-owned metadata? The display name will become{' '}
+                  {confirmed.displayName === null ? 'none (the Agent ID is shown)' : '"' + confirmed.displayName + '"'},
+                  and the notes will become{' '}
+                  {confirmed.notes === null ? 'none' : '"' + confirmed.notes + '"'}. The Agent ID,
+                  Host identity, Server liveness, Agent Epoch, and collection configuration are not touched.
+                </span>
+                <Button
+                  type="button"
+                  aria-disabled={submitting || held || undefined}
+                  className="aria-disabled:cursor-progress aria-disabled:opacity-70"
+                  disabled={held}
+                  onClick={() => void confirm()}
+                >
+                  {submitting ? 'Saving…' : 'Confirm save'}
+                </Button>
+                <Button
+                  variant="outline"
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => {
+                    setConfirmed(null)
+                    focusNext.current = 'input'
+                  }}
+                >
+                  Keep editing
+                </Button>
+              </div>
+            ) : serverHasDraft ? null : (
+              <div className="flex flex-wrap items-center gap-3">
+                <Button
+                  type="submit"
+                  disabled={serverMoved || held}
+                  aria-describedby={
+                    [serverMoved ? movedNoticeId : null, held ? holdReasonId : null]
+                      .filter((id) => id !== null)
+                      .join(' ') || undefined
+                  }
+                >
+                  Save name and notes
+                </Button>
+              </div>
+            )}
+            <div className="flex flex-wrap items-center gap-3">
+              <Button variant="outline" type="button" disabled={submitting} onClick={cancel}>
+                {serverHasDraft ? 'Close editor' : 'Cancel'}
+              </Button>
+            </div>
+          </form>
+        ) : (
+          <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="min-w-0">
+              <dt className="text-xs font-medium tracking-wider text-muted-foreground">Display name</dt>
+              <dd className="mt-0.5 min-w-0 break-words text-sm">
+                <span className="inline-flex flex-wrap items-center gap-2">
+                  {current.displayName.trim() || 'None — Agent ID is shown'}
+                  <Button
+                    ref={editRef}
+                    variant="link"
+                    size="sm"
+                    onClick={startEdit}
+                    disabled={held}
+                    aria-describedby={held ? holdReasonId : undefined}
+                  >
+                    Edit
+                  </Button>
+                </span>
+              </dd>
+            </div>
+            <div className="min-w-0">
+              <dt className="text-xs font-medium tracking-wider text-muted-foreground">Notes</dt>
+              <dd className="mt-0.5 min-w-0 whitespace-pre-wrap break-words text-sm">
+                {current.notes.trim() || 'None'}
+              </dd>
+            </div>
+          </dl>
+        )}
+        {held && (
+          <span id={holdReasonId} className="mt-1 block text-xs text-muted-foreground">
+            {readBackFailure
+              ? 'The display name and notes could not be read back after the last save, so this page may still show the earlier values.'
+              : 'The latest Agent details could not be read, so the name and notes shown may be out of date.'}{' '}
+            Read the Agent again before editing.
+            {!readBackFailure && (
+              <Button variant="link" size="sm" disabled={reading} onClick={() => void readAgain()}>
+                {reading ? 'Reading…' : 'Read the Agent again'}
+              </Button>
+            )}
+          </span>
+        )}
+        <span
+          className={message && !submitting ? 'mt-1 block text-sm text-success' : 'sr-only'}
+          role="status"
+        >
+          {submitting ? 'Saving the name and notes…' : message}
+        </span>
+        {readBackFailure && (
+          <ReadBackNotice
+            className="mt-2"
+            readAgainLabel="Read the Agent again"
+            readAgainRef={readAgainRef}
+            onReadAgain={() => void readAgain()}
+            reading={reading}
           >
-            Display name
-          </label>
-          <Input
-            id="agent-display-name"
-            value={displayName}
-            maxLength={128}
-            placeholder="Unnamed Agent (identified by the stable ID)"
-            onChange={(event) => setDisplayName(event.target.value)}
-          />
-          <p className="text-xs text-muted-foreground">
-            Optional, at most 128 characters. Clear it to identify the Agent by its stable ID.
-          </p>
-        </div>
-        <div className="flex flex-col gap-1">
-          <label
-            className="text-xs font-medium tracking-wider text-muted-foreground"
-            htmlFor="agent-notes"
-          >
-            Notes
-          </label>
-          <Textarea
-            id="agent-notes"
-            value={notes}
-            maxLength={2000}
-            rows={4}
-            placeholder="Optional operational context"
-            onChange={(event) => setNotes(event.target.value)}
-          />
-          <p className="text-xs text-muted-foreground">Optional, at most 2000 characters.</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <Button type="submit" disabled={busy}>
-            {busy ? 'Saving…' : 'Save name and notes'}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={busy}
-            onClick={() => {
-              setDisplayName(agent.display_name ?? '')
-              setNotes(agent.notes ?? '')
-              setError(null)
-              setMessage(null)
-            }}
-          >
-            Reset
-          </Button>
-        </div>
-        {message && (
-          <p className="text-sm text-success" role="status">
-            {message}
-          </p>
+            The display name and notes were saved, but the Agent could not be read back afterwards, so
+            this page may still show the earlier values. The save is not sent again.
+          </ReadBackNotice>
         )}
         {error && (
-          <p className="text-sm text-destructive" role="alert">
+          <span className="mt-1 block text-sm text-destructive" role="alert">
             {error}
-          </p>
+          </span>
         )}
         <p className="text-xs text-muted-foreground">
           Saved through the Owner-only, CSRF-guarded Admin route and recorded in the Audit
@@ -1151,7 +1470,7 @@ function MetadataPanel({ agent, onSaved }: { agent: AgentDiagnostic; onSaved: ()
           Host identity, Server liveness, Agent Epoch, and collection configuration are
           read-only and never editable here.
         </p>
-      </form>
+      </div>
     </CardX>
   )
 }
