@@ -713,25 +713,26 @@ pub async fn process_due_deliveries(
     // (including an in-flight provider send) before the WAL checkpoint and
     // database close (sends complete or return to
     // RetryScheduled; a Delivery left in_flight is repaired on next boot).
-    let Some(_guard) = state.ingestion_guard() else {
-        return Ok(0);
-    };
+    // Take the crash-recovery transaction and the due read before the
+    // ingestion guard. On the SQLite Backend the single pool connection can
+    // be busy behind a retention sweep; holding the guard across that wait
+    // would make graceful shutdown drain a pass that has not begun its
+    // critical section. Crash recovery and the due read are
+    // idempotent setup; if shutdown starts before the guard, the pass returns
+    // without claiming any Delivery.
     let now = now_utc();
-    let mut processed = 0usize;
+    let mut recovery = crate::database::begin(state.db().pool()).await?;
 
     // Crash recovery: a Delivery left in_flight by a dead process was
     // claimed but never recorded; re-queue it (at-least-once allows the
     // duplicate the provider may have already seen).
-    {
-        let mut tx = crate::database::begin(state.db().pool()).await?;
-        sqlx::query(
-            "UPDATE notification_deliveries SET state = 'pending', next_attempt_at = NULL, updated_at = $1 WHERE state = 'in_flight'",
-        )
-        .bind(format_rfc3339(now))
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-    }
+    sqlx::query(
+        "UPDATE notification_deliveries SET state = 'pending', next_attempt_at = NULL, updated_at = $1 WHERE state = 'in_flight'",
+    )
+    .bind(format_rfc3339(now))
+    .execute(&mut *recovery)
+    .await?;
+    recovery.commit().await?;
 
     let now_text = format_rfc3339(now);
     let due: Vec<DeliveryRow> = {
@@ -744,6 +745,11 @@ pub async fn process_due_deliveries(
         .fetch_all(&mut *conn)
         .await?
     };
+
+    let Some(_guard) = state.ingestion_guard() else {
+        return Ok(0);
+    };
+    let mut processed = 0usize;
 
     for delivery in due {
         // Claim atomically: a parallel retry/test path or a previous pass

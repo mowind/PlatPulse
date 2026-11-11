@@ -1791,6 +1791,68 @@ mod tests {
             "nothing in flight is drained at once, even past the deadline"
         );
     }
+
+    /// A background pass waiting for the single SQLite write connection has
+    /// not entered its critical section yet; shutdown must not wait for it.
+    /// Taking the ingestion guard before the transaction made a retention
+    /// sweep stretch the drain past its deadline.
+    #[cfg_attr(
+        storage_postgres,
+        ignore = "a single write connection blocking the pass is SQLite-specific"
+    )]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_sweep_waiting_for_the_write_connection_does_not_hold_the_drain() {
+        let (_, _, state) = test_state().await;
+        let blocker = crate::database::begin(state.db().pool()).await.unwrap();
+        let sweep_state = state.clone();
+        let sweep = tokio::spawn(async move { crate::alerts::sweep(&sweep_state).await });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        state.begin_shutdown();
+        let started = tokio::time::Instant::now();
+        assert!(
+            state
+                .wait_for_ingestion(started + std::time::Duration::from_secs(10))
+                .await,
+            "a pass waiting for the write connection must not be counted as in flight"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+
+        drop(blocker);
+        assert_eq!(sweep.await.unwrap().unwrap(), 0);
+    }
+
+    /// The notification pass uses the same guard-after-transaction ordering;
+    /// this is its regression case.
+    #[cfg_attr(
+        storage_postgres,
+        ignore = "a single write connection blocking the pass is SQLite-specific"
+    )]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_notification_pass_waiting_for_the_write_connection_does_not_hold_the_drain() {
+        let (_, _, state) = test_state().await;
+        let blocker = crate::database::begin(state.db().pool()).await.unwrap();
+        let pass_state = state.clone();
+        let provider = crate::notifications::DevNullProvider;
+        let pass = tokio::spawn(async move {
+            crate::notifications::process_due_deliveries(&pass_state, &provider).await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        state.begin_shutdown();
+        let started = tokio::time::Instant::now();
+        assert!(
+            state
+                .wait_for_ingestion(started + std::time::Duration::from_secs(10))
+                .await,
+            "a pass waiting for the write connection must not be counted as in flight"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+
+        drop(blocker);
+        assert_eq!(pass.await.unwrap().unwrap(), 0);
+    }
+
     #[tokio::test]
     async fn ready_reports_setup_required_without_owner() {
         let (_, _, state) = test_state_with_files(&[
