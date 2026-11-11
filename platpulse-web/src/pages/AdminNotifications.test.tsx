@@ -110,7 +110,7 @@ function jsonResponse(body: unknown, status: number): Response {
 }
 
 function errorResponse(code: string, message: string, status: number): Response {
-  return jsonResponse({ error: { code, message } }, status)
+  return jsonResponse({ error: { code, message, requestId: 'req-err', fields: [] } }, status)
 }
 
 type Recorded = { url: string; method: string; body: string; csrf: string | null }

@@ -209,7 +209,7 @@ function jsonResponse(body: unknown, status: number): Response {
 /** Sanitized ApiErrorBody, as the Server sends it. */
 function apiError(code: string, message: string, status: number): Response {
   return jsonResponse(
-    { error: { code, message, requestId: 'req-err' } },
+    { error: { code, message, requestId: 'req-err', fields: [] } },
     status,
   )
 }

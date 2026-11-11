@@ -8,6 +8,7 @@ import {
   useAdminChannels,
 } from '../api/admin'
 import type { ChannelTestResponse } from '../api/generated'
+import { CHANNEL_TEST_REFUSALS, mutationOutcome } from '../api/mutationOutcome'
 import { useAuth } from '../auth/AuthContext'
 import { StatusBadge } from '../components/StatusBadge'
 import { Button } from '../components/ui/button'
@@ -23,7 +24,6 @@ import {
   NotificationSectionNav,
   deliveryStateTone,
   errorMessage,
-  indeterminateOutcome,
   shortId,
   type FormFeedback,
 } from './notificationShared'
@@ -56,7 +56,7 @@ export default function AdminNotificationChannels() {
           : 'The Server accepted the test command and recorded its Audit entry. The Delivery state below is the provider outcome; a provider failure is not an HTTP failure.',
       })
     } catch (error) {
-      if (indeterminateOutcome(error)) {
+      if (mutationOutcome(error, CHANNEL_TEST_REFUSALS) === 'unknown') {
         setReconcileId(requestId)
         setFeedback({ tone: 'error', message: INDETERMINATE_OUTCOME })
       } else if (error instanceof AdminApiError && error.code === 'test_cooldown_active') {

@@ -119,7 +119,7 @@ function jsonResponse(body: unknown, status: number): Response {
 }
 
 function apiError(code: string, message: string, status: number): Response {
-  return jsonResponse({ error: { code, message, requestId: 'req-err' } }, status)
+  return jsonResponse({ error: { code, message, requestId: 'req-err', fields: [] } }, status)
 }
 
 const TEST_ORIGIN = 'http://platpulse.test'

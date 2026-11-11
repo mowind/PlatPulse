@@ -1,6 +1,11 @@
 import { useRef, useState, type FormEvent } from 'react'
 import { useSearchParams } from 'react-router'
-import { AdminApiError, cancelSilenceEntry, createSilenceEntry, useAdminSilences } from '../api/admin'
+import { cancelSilenceEntry, createSilenceEntry, useAdminSilences } from '../api/admin'
+import {
+  SILENCE_CANCEL_REFUSALS,
+  SILENCE_CREATE_REFUSALS,
+  mutationOutcome,
+} from '../api/mutationOutcome'
 import { useAuth } from '../auth/AuthContext'
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert'
 import { Button } from '../components/ui/button'
@@ -44,11 +49,6 @@ function capitalize(value: string): string {
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message.length > 0 ? error.message : fallback
-}
-
-/** A browser transport failure is not proof that the mutation did not commit. */
-function indeterminateOutcome(error: unknown): boolean {
-  return error instanceof AdminApiError && error.code === 'network_unavailable'
 }
 
 const INDETERMINATE_OUTCOME =
@@ -201,7 +201,10 @@ export default function AdminSilencesList() {
       // #202: a transport error does not prove the mutation did not commit.
       setFeedback({
         tone: 'error',
-        message: indeterminateOutcome(error) ? message + ' ' + INDETERMINATE_OUTCOME : message,
+        message:
+          mutationOutcome(error, SILENCE_CREATE_REFUSALS) === 'unknown'
+            ? message + ' ' + INDETERMINATE_OUTCOME
+            : message,
       })
     } finally {
       setBusy(false)
@@ -226,7 +229,10 @@ export default function AdminSilencesList() {
       // The cancellation may have committed even though the response was lost.
       setFeedback({
         tone: 'error',
-        message: indeterminateOutcome(error) ? message + ' ' + INDETERMINATE_OUTCOME : message,
+        message:
+          mutationOutcome(error, SILENCE_CANCEL_REFUSALS) === 'unknown'
+            ? message + ' ' + INDETERMINATE_OUTCOME
+            : message,
       })
     } finally {
       setBusy(false)

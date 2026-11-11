@@ -11,6 +11,7 @@ import {
   verifyBackupEntry,
 } from '../api/admin'
 import type { BackupArtifactSummary } from '../api/generated'
+import { BACKUP_VERIFY_REFUSALS, mutationOutcome } from '../api/mutationOutcome'
 import { useAuth } from '../auth/AuthContext'
 import { StatusBadge, formatObservedAt } from '../components/StatusBadge'
 import { Button } from '../components/ui/button'
@@ -37,7 +38,6 @@ import {
   OperationStatus,
   ResultBlock,
   errorMessage,
-  indeterminateOutcome,
   recordedAge,
   shortId,
   type FormFeedback,
@@ -417,7 +417,7 @@ function VerificationCard({
       })
     } catch (error) {
       if (!mounted.current) return
-      if (indeterminateOutcome(error)) {
+      if (mutationOutcome(error, BACKUP_VERIFY_REFUSALS) === 'unknown') {
         setFeedback({ tone: 'error', message: INDETERMINATE_OUTCOME })
       } else if (error instanceof AdminApiError && error.code === 'backup_artifact_not_found') {
         setFeedback({

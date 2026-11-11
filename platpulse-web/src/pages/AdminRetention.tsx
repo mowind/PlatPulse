@@ -11,6 +11,12 @@ import {
   useRetentionImpact,
 } from '../api/admin'
 import type { OperationSummary, RetentionPolicyDto, RetentionPreviewDto } from '../api/generated'
+import {
+  RETENTION_PREVIEW_REFUSALS,
+  RETENTION_RUN_REFUSALS,
+  RETENTION_UPDATE_REFUSALS,
+  mutationOutcome,
+} from '../api/mutationOutcome'
 import { useAuth } from '../auth/AuthContext'
 import { StatusBadge, formatObservedAt } from '../components/StatusBadge'
 import { Alert, AlertDescription } from '../components/ui/alert'
@@ -25,7 +31,6 @@ import {
   OperationProgress,
   OperationStatus,
   errorMessage,
-  indeterminateOutcome,
   recordedAge,
   shortId,
 } from './operationsShared'
@@ -462,7 +467,9 @@ function PolicyEditor({
       setConfirmation('')
       onSaved(response.policy)
     } catch (caught) {
-      if (caught instanceof AdminApiError && caught.code === 'retention_policy_version_conflict') {
+      if (mutationOutcome(caught, RETENTION_UPDATE_REFUSALS) === 'unknown') {
+        setError(UNKNOWN_POLICY_OUTCOME)
+      } else if (caught instanceof AdminApiError && caught.code === 'retention_policy_version_conflict') {
         // The value the Operator confirmed is no longer the value on the Server,
         // so the confirmation is discarded and must be re-entered against what
         // the Server now records: the draft is dropped as well, never re-sent.
@@ -478,8 +485,6 @@ function PolicyEditor({
         )
       } else if (caught instanceof AdminApiError && caught.fields.includes('retentionDays')) {
         setFieldError(caught.message)
-      } else if (indeterminateOutcome(caught)) {
-        setError(UNKNOWN_POLICY_OUTCOME)
       } else {
         setError(errorMessage(caught, 'Unable to update the retention policy.'))
       }
@@ -653,7 +658,7 @@ function PreviewPanel({
       onComposed(created)
     } catch (caught) {
       setError(
-        indeterminateOutcome(caught)
+        mutationOutcome(caught, RETENTION_PREVIEW_REFUSALS) === 'unknown'
           ? UNKNOWN_PREVIEW_OUTCOME
           : errorMessage(caught, 'Unable to compose a retention preview.'),
       )
@@ -888,7 +893,9 @@ function RunPanel({
               'outcome.',
       )
     } catch (caught) {
-      if (
+      if (mutationOutcome(caught, RETENTION_RUN_REFUSALS) === 'unknown') {
+        setError(UNKNOWN_RUN_OUTCOME)
+      } else if (
         caught instanceof AdminApiError &&
         (caught.code === 'retention_preview_stale' || caught.code === 'retention_preview_not_found')
       ) {
@@ -916,9 +923,7 @@ function RunPanel({
         setCommandId(newRetentionRunRequestId())
         setError(caught.message + ' This page will confirm the run again under a new command identity.')
       } else {
-        setError(
-          indeterminateOutcome(caught) ? UNKNOWN_RUN_OUTCOME : errorMessage(caught, 'Unable to start the retention run.'),
-        )
+        setError(errorMessage(caught, 'Unable to start the retention run.'))
       }
     } finally {
       setRunning(false)

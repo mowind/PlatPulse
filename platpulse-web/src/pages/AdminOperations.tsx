@@ -12,6 +12,7 @@ import {
   useAdminOperations,
 } from '../api/admin'
 import type { CapacityOverview, OperationSummary } from '../api/generated'
+import { OPERATION_CANCEL_REFUSALS, mutationOutcome } from '../api/mutationOutcome'
 import { useAuth } from '../auth/AuthContext'
 import { formatBytesUnknown } from '../formatBytes'
 import { StatusBadge, formatObservedAt } from '../components/StatusBadge'
@@ -33,7 +34,6 @@ import {
   OperationStatus,
   ResultBlock,
   errorMessage,
-  indeterminateOutcome,
   operationDuration,
   shortId,
   type FormFeedback,
@@ -583,7 +583,7 @@ function CancelPanel({ detail }: { detail: { operation: OperationSummary; cancel
       })
       return result
     } catch (error) {
-      if (indeterminateOutcome(error)) {
+      if (mutationOutcome(error, OPERATION_CANCEL_REFUSALS) === 'unknown') {
         setFeedback({ tone: 'error', message: INDETERMINATE_OUTCOME })
       } else if (
         error instanceof AdminApiError &&
