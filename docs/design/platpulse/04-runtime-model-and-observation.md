@@ -21,6 +21,8 @@ Agent 是绑定一个 Host 的采集进程，拥有：
 - 本地 Node Inventory；
 - 本地 Agent Store 与 Durable Spool。
 
+Agent 进程内只有一个 Agent Runtime 监督其长生命周期 worker：报告采集、投递以及按 Node 划分的 RPC、数据目录和区块采集任务共享同一个绝对停机截止时间。停机先取消 intake，再在截止时间内 join 各 worker，并把未完成的 Block 订阅转换为显式 History Gap；worker 失败按根因优先于停机或 Closing 错误归因。Closing 报告由 Runtime 在停机流程内落盘，并沿用独立的发送预算投递，失败不会掩盖原始退出原因。
+
 Agent 不拥有 Network Registry、Site Access Mode 或用户权限。
 
 ### 4.4 PlatON Node

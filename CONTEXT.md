@@ -12,6 +12,10 @@ _Avoid_: Agent server, Node agent
 A collector instance bound to one Host that connects to one or more PlatON Nodes on that Host and reports each Node's observations independently. One Agent may monitor Nodes from different Networks.
 _Avoid_: Node agent, Chain agent
 
+**Agent Runtime**:
+The in-process supervisor of one Agent's long-lived workers (the Node Supervisor role). It starts and joins the report, delivery and per-Node collection workers under one absolute shutdown deadline, attributes worker failures, and completes the Closing report. It is not a process selector.
+_Avoid_: Supervisor process, Collector supervisor
+
 **PlatON Node**:
 A monitored logical PlatON node instance with a stable Node ID, one RPC Endpoint at a time, and one Network. Block, transaction, consensus, and other observations belong to this Node rather than to its Agent as a whole.
 _Avoid_: RPC target, Endpoint

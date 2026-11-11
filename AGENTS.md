@@ -20,7 +20,7 @@ PlatPulse is a Server–Agent–WebUI monitoring suite for PlatON nodes, develop
 Cargo.toml
 crates/
 ├── platpulse-core/     # AgentReport v1, wire types, Observation Envelope, Block Summary, History Gap
-├── platpulse-agent/    # config/CLI, collectors, Node Supervisor, AgentStore, report sender
+├── platpulse-agent/    # config/CLI, collectors, Agent Runtime (Node Supervisor role), AgentStore, report sender
 └── platpulse-server/   # HTTP/SSE, auth, Report Ingestion, SQLite projections, alerts, web assets
 platpulse-web/          # React SPA; generated API client lives in src/api/generated/
 ```

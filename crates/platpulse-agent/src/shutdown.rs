@@ -8,7 +8,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use platpulse_core::block::BlockSummary;
 use platpulse_core::hex::Hash32;
@@ -16,7 +16,7 @@ use platpulse_core::identity::NodeId;
 use platpulse_core::network::NetworkIdentity;
 use platpulse_core::time::Rfc3339;
 
-use tokio::time::timeout_at;
+use tokio::time::{Instant, timeout_at};
 
 use crate::block::{HeadSubscription, ResolveError, ResolvedBlock, WebSocketBlockTransport};
 use crate::shutdown_record::ShutdownState;
@@ -382,6 +382,30 @@ mod tests {
         );
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_deadline_is_absolute_and_not_restarted() {
+        let deadline = ShutdownDeadline::start(Duration::from_secs(2));
+        let drain_until = deadline.drain_until();
+        tokio::time::advance(Duration::from_secs(3)).await;
+        let mut sub = HeadSubscription::new(node(), 2);
+        sub.push(header(1)).unwrap();
+        let result = drain_subscription(
+            &mut sub,
+            &Fake {
+                delay: Duration::from_secs(10),
+                notify: None,
+            },
+            identity(),
+            deadline.started_at(),
+            drain_until,
+        )
+        .await;
+        assert!(result.timed_out);
+        assert_eq!(result.unresolved_range, Some((1, 1)));
+        assert!(result.summaries.is_empty());
+        assert_eq!(result.elapsed, Duration::ZERO);
+    }
+
     #[tokio::test]
     async fn resolver_failure_preserves_queued_range_without_discarding_it() {
         struct Failure;
@@ -430,6 +454,38 @@ fn shutdown_timestamp() -> Rfc3339 {
         .expect("valid timestamp")
 }
 
+/// One absolute shutdown deadline shared by worker joins, queue draining and
+/// the shutdown record.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ShutdownDeadline {
+    started_at: Rfc3339,
+    drain_until: Instant,
+    deadline_at: Rfc3339,
+}
+
+impl ShutdownDeadline {
+    pub(crate) fn start(drain_deadline: Duration) -> Self {
+        let started_at = shutdown_timestamp();
+        Self {
+            started_at,
+            drain_until: Instant::now() + drain_deadline,
+            deadline_at: started_at_plus(started_at, drain_deadline),
+        }
+    }
+
+    pub(crate) fn started_at(self) -> Rfc3339 {
+        self.started_at
+    }
+
+    pub(crate) fn drain_until(self) -> Instant {
+        self.drain_until
+    }
+
+    pub(crate) fn deadline_at(self) -> Rfc3339 {
+        self.deadline_at
+    }
+}
+
 struct TransportResolver<'a> {
     transport: &'a WebSocketBlockTransport,
     endpoint: &'a platpulse_core::network::RpcEndpoint,
@@ -459,10 +515,11 @@ pub async fn graceful_shutdown(
     let _runtime_lock = crate::database::AgentRuntimeLock::acquire(&config.state_db)
         .map_err(|error| crate::collector::CollectionError::RuntimeOwnership(error.to_string()))?;
     let sender = crate::reporting::HttpReportTransport::from_config(config)?;
+    let deadline = ShutdownDeadline::start(sender_deadline);
     graceful_shutdown_with_permit(
         config,
         &mut [],
-        sender_deadline,
+        deadline,
         sender_deadline,
         crate::database::AgentStoreWritePermit::new(),
         &sender,
@@ -473,7 +530,7 @@ pub async fn graceful_shutdown(
 pub(crate) async fn graceful_shutdown_with_permit(
     config: &crate::config::AgentConfig,
     subscriptions: &mut [HeadSubscription],
-    drain_deadline: Duration,
+    deadline: ShutdownDeadline,
     sender_deadline: Duration,
     write_permit: crate::database::AgentStoreWritePermit,
     sender: &dyn crate::reporting::ReportTransport,
@@ -493,9 +550,8 @@ pub(crate) async fn graceful_shutdown_with_permit(
     if state.boot_id.is_none() {
         return Err(crate::collector::CollectionError::RecoveryRequired);
     }
-    let started = shutdown_timestamp();
-    let deadline = started_at_plus(started, drain_deadline);
-    crate::shutdown_record::begin(&mut tx, started, deadline).await?;
+    let started = deadline.started_at();
+    crate::shutdown_record::begin(&mut tx, started, deadline.deadline_at()).await?;
     tx.commit().await?;
 
     let inventory = config
@@ -503,7 +559,7 @@ pub(crate) async fn graceful_shutdown_with_permit(
         .map_err(|error| crate::collector::CollectionError::Identity(error.to_string()))?
         .inventory;
     let last_good = crate::collector::load_last_report(&mut store).await?;
-    let drain_until = Instant::now() + drain_deadline;
+    let drain_until = deadline.drain_until();
     let transport = WebSocketBlockTransport::default();
     for subscription in subscriptions.iter_mut() {
         let Some(node) = inventory
@@ -558,7 +614,7 @@ pub(crate) async fn graceful_shutdown_with_permit(
         }
     }
 
-    let send_deadline = started_at_plus(started, sender_deadline);
+    let send_deadline = started_at_plus(deadline.deadline_at(), sender_deadline);
     let closing = crate::closing::store_restated_closing(
         &mut store,
         config,
