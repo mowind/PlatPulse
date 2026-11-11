@@ -50,6 +50,7 @@ import { Button } from '../components/ui/button'
 import { CardX } from '../components/ui/card-x'
 import { Empty } from '../components/ui/empty'
 import { Input, Select } from '../components/ui/input'
+import { editRoundView } from '../lib/editRound'
 import { readBackRecovered, type DetailRead, type DetailReadResult, type ReadBackFailure } from '../lib/readBack'
 import { readAfterWrite } from '../lib/readAfterWrite'
 import { ReadBackNotice } from '../components/ReadBackNotice'
@@ -1246,16 +1247,19 @@ function MetadataPanel({
   // tab). The draft is kept, never overwritten, and a confirmation given
   // against the earlier name no longer stands. Our own save is excluded: it
   // is in flight until the refetched detail has arrived.
-  const serverMoved = edit !== null && !submitting && current !== edit.base
+  const { serverMoved, serverHasDraft } = editRoundView({
+    edit,
+    current,
+    submitting,
+    same: (left, right) => left === right,
+    serverHoldsDraft: (serverName, draft) => serverName === displayNameToSend(draft),
+  })
   if (serverMoved && confirmed !== null) setConfirmed(null)
   // The detail this edit would start from is not authoritative: its last read
   // failed (after a write, or on a page refresh) and the value on screen may
   // be earlier than the Server's. No round may start or save against it.
   const held = readBackFailure !== null || detailRead.isError
   if (held && confirmed !== null) setConfirmed(null)
-  // The Server already holds the draft — for example a write whose answer
-  // was lost reached it after all. Nothing is left to save.
-  const serverHasDraft = serverMoved && current === displayNameToSend(edit.draft)
   const movedNoticeId = 'display-name-server-moved-' + node.node_id
   const nameErrorId = 'display-name-error-' + node.node_id
   const holdReasonId = 'display-name-hold-' + node.node_id

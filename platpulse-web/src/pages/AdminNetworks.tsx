@@ -24,6 +24,7 @@ import {
   type NetworkTupleWriteOutcome,
 } from '../api/networkTupleWrites'
 import { ReadBackNotice } from '../components/ReadBackNotice'
+import { editRoundView } from '../lib/editRound'
 import { cn } from '../lib/utils'
 import type { AdminNetwork, AdminNetworkDetail, AdminNetworkNode } from '../api/generated'
 import { DetailItem, DetailList } from '../components/DetailList'
@@ -623,12 +624,15 @@ function IdentityTuplePanel({
   // The Server tuple moved while this round was open: the draft is kept, and
   // a confirmation given against the earlier tuple no longer stands. Our own
   // update is excluded while it is in flight (including its read-back).
-  const serverMoved = edit !== null && !submitting && !sameTuple(current, edit.base)
+  const { serverMoved, serverHasDraft } = editRoundView({
+    edit: edit === null ? null : { draft: edit.fields, base: edit.base },
+    current,
+    submitting,
+    same: sameTuple,
+    serverHoldsDraft: (server, draft) =>
+      JSON.stringify(tupleUpdate(server)) === JSON.stringify(tupleUpdate(draft)),
+  })
   if (serverMoved && confirmed !== null) setConfirmed(null)
-  // The Server already holds the draft (for example a write whose answer was
-  // lost reached it after all): nothing is left to save.
-  const serverHasDraft =
-    serverMoved && JSON.stringify(tupleUpdate(current)) === JSON.stringify(tupleUpdate(edit.fields))
   const movedNoticeId = 'network-edit-server-moved'
   // While an earlier update holds this Network (unanswered, not read back, or
   // with a lost answer), this page may still show the tuple from before it,
