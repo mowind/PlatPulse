@@ -1336,6 +1336,203 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
       expect(metadataWrites(fetchMock)).toBe(1)
     })
 
+    it('holds a new edit while the last read-back failed, and starts from the Server name after a successful read', async () => {
+      let saved = false
+      let readable = false
+      const fetchMock = mockFetch({
+        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+        [NODE_URL]: () =>
+          saved && !readable
+            ? jsonResponse({ error: { code: 'unavailable', message: 'read failed' } }, 503)
+            : jsonResponse(saved ? { ...NODE_A_DETAIL, display_name: 'Unread' } : NODE_A_DETAIL, 200),
+        [NODE_URL + '/metadata']: () => {
+          saved = true
+          return jsonResponse({ nodeId: NODE_A.node_id, displayName: 'Unread' }, 200)
+        },
+      })
+      renderAt(NODE_URL.replace('/api/admin/v1', '/admin') + '?section=manage')
+      await screen.findByRole('heading', { level: 1, name: 'Node A' })
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Edit' }))
+      fireEvent.change(nameInput(), { target: { value: 'Unread' } })
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Save' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm rename' }))
+      await within(metadataPanel()).findByText('Display name is now "Unread".')
+      expect(readBackNotice()).not.toBeNull()
+
+      // The page still shows the pre-write name; a new round from it could
+      // revert the write. Edit is held with the reason beside it.
+      const edit = within(metadataPanel()).getByRole('button', { name: 'Edit' }) as HTMLButtonElement
+      expect(edit.disabled).toBe(true)
+      const reason = document.getElementById(edit.getAttribute('aria-describedby') ?? '') as HTMLElement
+      expect(metadataPanel().contains(reason)).toBe(true)
+      expect(reason.textContent).toMatch(/could not be read back/)
+      expect(reason.textContent).toMatch(/Read the Node again before editing/)
+      fireEvent.click(edit)
+      expect(within(metadataPanel()).queryByRole('textbox')).toBeNull()
+
+      readable = true
+      fireEvent.click(within(readBackNotice() as HTMLElement).getByRole('button', { name: 'Read the Node again' }))
+      await screen.findByRole('heading', { level: 1, name: 'Unread' })
+      await waitFor(() => expect(readBackNotice()).toBeNull())
+      const released = within(metadataPanel()).getByRole('button', { name: 'Edit' }) as HTMLButtonElement
+      expect(released.disabled).toBe(false)
+      fireEvent.click(released)
+      expect(nameInput().value).toBe('Unread')
+      expect(metadataWrites(fetchMock)).toBe(1)
+    })
+
+    it('keeps the edit held after leaving and reopening the Node while its detail is still unreadable', async () => {
+      let saved = false
+      const readable = false
+      mockFetch({
+        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+        [NODE_URL]: () =>
+          saved && !readable
+            ? jsonResponse({ error: { code: 'unavailable', message: 'read failed' } }, 503)
+            : jsonResponse(saved ? { ...NODE_A_DETAIL, display_name: 'Unread' } : NODE_A_DETAIL, 200),
+        [NODE_URL + '/metadata']: () => {
+          saved = true
+          return jsonResponse({ nodeId: NODE_A.node_id, displayName: 'Unread' }, 200)
+        },
+      })
+      renderAt(NODE_URL.replace('/api/admin/v1', '/admin') + '?section=manage')
+      await screen.findByRole('heading', { level: 1, name: 'Node A' })
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Edit' }))
+      fireEvent.change(nameInput(), { target: { value: 'Unread' } })
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Save' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm rename' }))
+      await within(metadataPanel()).findByText('Display name is now "Unread".')
+      expect(readBackNotice()).not.toBeNull()
+
+      async function go(path: string) {
+        await act(async () => {
+          window.history.pushState({}, '', path)
+          window.dispatchEvent(new PopStateEvent('popstate'))
+          await Promise.resolve()
+        })
+      }
+      await go('/admin/nodes')
+      await screen.findByRole('heading', { level: 1, name: 'Nodes' })
+      await go(NODE_URL.replace('/api/admin/v1', '/admin') + '?section=manage')
+      await screen.findByRole('heading', { level: 1, name: 'Node A' })
+
+      // The notice was local to the unmounted panel; the query's failed
+      // detail keeps the round held so the earlier name cannot be saved back.
+      expect(readBackNotice()).toBeNull()
+      const edit = within(metadataPanel()).getByRole('button', { name: 'Edit' }) as HTMLButtonElement
+      expect(edit.disabled).toBe(true)
+      const reason = document.getElementById(edit.getAttribute('aria-describedby') ?? '') as HTMLElement
+      expect(reason.textContent).toMatch(/latest Node details could not be read/)
+    })
+
+    it('holds the editor while a detail refresh fails with earlier data, and releases it on a successful read', async () => {
+      const detail = NODE_A_DETAIL
+      let fail = false
+      const fetchMock = mockFetch({
+        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+        [NODE_URL]: () =>
+          fail
+            ? jsonResponse({ error: { code: 'unavailable', message: 'read failed' } }, 503)
+            : jsonResponse(detail, 200),
+      })
+      renderAt(NODE_URL.replace('/api/admin/v1', '/admin') + '?section=manage')
+      await screen.findByRole('heading', { level: 1, name: 'Node A' })
+
+      fail = true
+      await backgroundRefresh()
+      expect(await screen.findByText(/Failed to refresh; showing the last successful Node values/)).toBeTruthy()
+      const edit = within(metadataPanel()).getByRole('button', { name: 'Edit' }) as HTMLButtonElement
+      expect(edit.disabled).toBe(true)
+      const reason = document.getElementById(edit.getAttribute('aria-describedby') ?? '') as HTMLElement
+      expect(reason.textContent).toMatch(/latest Node details could not be read/)
+      expect(reason.textContent).toMatch(/Read the Node again before editing/)
+      fireEvent.click(edit)
+      expect(within(metadataPanel()).queryByRole('textbox')).toBeNull()
+
+      fail = false
+      fireEvent.click(within(reason).getByRole('button', { name: 'Read the Node again' }))
+      await waitFor(() =>
+        expect(screen.queryByText(/Failed to refresh; showing the last successful Node values/)).toBeNull(),
+      )
+      await waitFor(() =>
+        expect((within(metadataPanel()).getByRole('button', { name: 'Edit' }) as HTMLButtonElement).disabled).toBe(
+          false,
+        ),
+      )
+      expect(metadataWrites(fetchMock)).toBe(0)
+    })
+
+    it('sends nothing when Save is pressed without changing the name', async () => {
+      const puts = serveRename()
+      renderAt(NODE_URL.replace('/api/admin/v1', '/admin') + '?section=manage')
+      await screen.findByRole('heading', { level: 1, name: 'Node A' })
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Edit' }))
+      expect(nameInput().value).toBe('Node A')
+
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Save' }))
+      expect(screen.queryByRole('button', { name: 'Confirm rename' })).toBeNull()
+      expect(within(metadataPanel()).queryByRole('textbox')).toBeNull()
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(puts).toEqual([])
+      expect(screen.getByRole('tab', { name: /^Manage/ }).textContent).not.toContain('Unsaved')
+    })
+
+    it('reads the Node back with a read begun after the write, never one in flight before it', async () => {
+      const state = { saved: 'Node A', reads: 0 }
+      let release: (() => void) | null = null
+      mockFetch({
+        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+        [NODE_URL]: () => {
+          state.reads += 1
+          const snapshot = { ...NODE_A_DETAIL, display_name: state.saved }
+          if (state.reads === 2) {
+            return new Promise<Response>((resolve) => {
+              release = () => resolve(jsonResponse(snapshot, 200))
+            })
+          }
+          return jsonResponse(snapshot, 200)
+        },
+        [NODE_URL + '/metadata']: async (request) => {
+          const body = (await request.json()) as { displayName: string }
+          state.saved = body.displayName
+          return jsonResponse({ nodeId: NODE_A.node_id, displayName: body.displayName }, 200)
+        },
+      })
+      // The write's own invalidation must not be what makes the read-back
+      // correct: the read barrier has to do it on its own.
+      const invalidate = vi.spyOn(adminQueryClient, 'invalidateQueries').mockResolvedValue(undefined)
+      try {
+        renderAt(NODE_URL.replace('/api/admin/v1', '/admin') + '?section=manage')
+        await screen.findByRole('heading', { level: 1, name: 'Node A' })
+        fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Edit' }))
+        fireEvent.change(nameInput(), { target: { value: 'Unread' } })
+        await act(async () => {
+          void adminQueryClient.refetchQueries()
+          await Promise.resolve()
+        })
+        expect(state.reads).toBe(2)
+
+        fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Save' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Confirm rename' }))
+        await within(metadataPanel()).findByText('Display name is now "Unread".')
+        expect(screen.getByRole('heading', { level: 1, name: 'Unread' })).toBeTruthy()
+        expect(readBackNotice()).toBeNull()
+
+        // The pre-write read finishes later with the earlier name; it must
+        // not replace the read-back or the heading.
+        await act(async () => {
+          release?.()
+          await new Promise((resolve) => setTimeout(resolve, 30))
+        })
+        expect(screen.getByRole('heading', { level: 1, name: 'Unread' })).toBeTruthy()
+        expect(state.reads).toBe(3)
+      } finally {
+        invalidate.mockRestore()
+      }
+    })
+
     it('keeps focus where it is when a save with a failed read-back lands while Manage is hidden', async () => {
       let saved = false
       let release: () => void = () => {}

@@ -366,10 +366,12 @@ for (const theme of ['light', 'dark'] as const) {
       // One page-level refresh alert, not a second copy in the editor.
       await expect(page.getByText(/Failed to refresh; showing the last/)).toHaveCount(1)
       await expect(panel.getByText(/save failed/i)).toHaveCount(0)
-      // The read view is still the last Server value; the editor is closed.
+      // The read view is still the last Server value; the editor is closed and
+      // a new round is held until the Node can be read again.
       await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible()
       await expect(panel.getByRole('textbox')).toHaveCount(0)
-      await expect(panel.getByRole('button', { name: 'Edit' })).toBeFocused()
+      await expect(panel.getByRole('button', { name: 'Edit' })).toBeDisabled()
+      await expect(notice.getByRole('button', { name: 'Read the Node again' })).toBeFocused()
       await expectNoHorizontalOverflow(page)
       await shot(page, '[data-slot="card-x"]:has(h2:text-is("Server-owned metadata"))', 'node-rename-unread', theme)
 

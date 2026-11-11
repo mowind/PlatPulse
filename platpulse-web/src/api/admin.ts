@@ -617,9 +617,13 @@ export async function fetchAdminNode(
   )
 }
 
+export function adminNodeDetailQueryKey(generation: number, nodeId: string) {
+  return [...adminKeys.nodeDetail(nodeId), generation] as const
+}
+
 export function useAdminNodeDetail(generation: number, nodeId: string) {
   return useQuery({
-    queryKey: [...adminKeys.nodeDetail(nodeId), generation],
+    queryKey: adminNodeDetailQueryKey(generation, nodeId),
     queryFn: ({ signal }) => fetchAdminNode(nodeId, signal),
     // No placeholder: another Node's DTO must never render under this
     // Node's URL (per-Node scoping and non-leaking unknown/private state).
