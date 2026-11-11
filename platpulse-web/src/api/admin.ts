@@ -573,9 +573,13 @@ export async function fetchAdminAgentAudit(
   )
 }
 
+export function adminAgentDetailQueryKey(generation: number, agentId: string) {
+  return [...adminKeys.agentDetail(agentId), generation] as const
+}
+
 export function useAdminAgentDetail(generation: number, agentId: string) {
   return useQuery({
-    queryKey: [...adminKeys.agentDetail(agentId), generation],
+    queryKey: adminAgentDetailQueryKey(generation, agentId),
     queryFn: ({ signal }) => fetchAdminAgent(agentId, signal),
     enabled: agentId.length > 0,
   })

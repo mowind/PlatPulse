@@ -1180,11 +1180,13 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
     // A fresh Agent has no name: the stable ID is the visible identifier.
     expect(screen.queryByText('Host A Agent')).toBeNull()
 
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
     const displayInput = await screen.findByLabelText('Display name')
     const notesInput = screen.getByLabelText('Notes')
     fireEvent.change(displayInput, { target: { value: 'Host A Agent' } })
     fireEvent.change(notesInput, { target: { value: 'Primary Host' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save name and notes' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm save' }))
 
     expect(await screen.findByText(/Saved\. The name and notes are Server-owned/)).toBeTruthy()
     expect(savedBody).toEqual({ displayName: 'Host A Agent', notes: 'Primary Host' })
@@ -1196,6 +1198,235 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
     fireEvent.click(screen.getByRole('button', { name: /Show full\s*Agent ID/ }))
     expect(screen.getAllByText(AGENT_ID, { exact: true }).length).toBeGreaterThan(0)
     expect(screen.getByRole('button', { name: 'Copy Agent ID' })).toBeTruthy()
+  })
+
+  describe('Server-owned metadata editor', () => {
+    const AGENT_URL = '/api/admin/v1/agents/' + AGENT_ID
+
+    function metadataPanel(): HTMLElement {
+      return screen
+        .getByRole('heading', { level: 2, name: 'Display name and notes' })
+        .closest('[data-slot="card-x"]') as HTMLElement
+    }
+
+    async function backgroundRefresh() {
+      await act(async () => {
+        await adminQueryClient.invalidateQueries()
+      })
+    }
+
+    function metadataWrites(fetchMock: ReturnType<typeof mockFetch>): number {
+      return fetchMock.mock.calls.filter(([input]) =>
+        String(input instanceof Request ? input.url : input).endsWith('/metadata'),
+      ).length
+    }
+
+    function initialAgent() {
+      return { ...AGENT_DIAGNOSTIC, display_name: 'Host A Agent', notes: 'Primary Host' }
+    }
+
+    it('keeps a draft through a background refresh and drops a confirmation when the Server changes', async () => {
+      let detail = initialAgent()
+      mockFetch({
+        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+        [AGENT_URL]: () => jsonResponse(detail, 200),
+        [AGENT_URL + '/audit']: () => jsonResponse({ agent_id: AGENT_ID, items: [] }, 200),
+      })
+      renderAt('/admin/agents/' + AGENT_ID + '?section=manage')
+      await screen.findByRole('heading', { level: 1, name: 'Host A Agent' })
+
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Edit' }))
+      const displayInput = within(metadataPanel()).getByLabelText('Display name') as HTMLInputElement
+      const notesInput = within(metadataPanel()).getByLabelText('Notes') as HTMLTextAreaElement
+      expect(displayInput.value).toBe('Host A Agent')
+      expect(notesInput.value).toBe('Primary Host')
+      fireEvent.change(displayInput, { target: { value: 'My draft' } })
+      fireEvent.change(notesInput, { target: { value: 'My notes' } })
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Save name and notes' }))
+      expect(within(metadataPanel()).getByRole('button', { name: 'Confirm save' })).toBeTruthy()
+
+      // Editing after Save withdraws the confirmation; Confirm must not send
+      // a value the Owner changed afterwards.
+      fireEvent.change(notesInput, { target: { value: 'Changed after confirmation' } })
+      expect(within(metadataPanel()).queryByRole('button', { name: 'Confirm save' })).toBeNull()
+
+      // A refresh during the edit keeps the draft and says the Server moved.
+      detail = { ...detail, display_name: 'Renamed elsewhere', notes: 'Other notes' }
+      await backgroundRefresh()
+      await screen.findByRole('heading', { level: 1, name: 'Renamed elsewhere' })
+      expect((within(metadataPanel()).getByLabelText('Display name') as HTMLInputElement).value).toBe('My draft')
+      expect((within(metadataPanel()).getByLabelText('Notes') as HTMLTextAreaElement).value).toBe(
+        'Changed after confirmation',
+      )
+      expect(
+        within(metadataPanel()).getByText(
+          /The Server now holds display name "Renamed elsewhere" and notes "Other notes" while you were editing/,
+        ),
+      ).toBeTruthy()
+      const save = within(metadataPanel()).getByRole('button', { name: 'Save name and notes' }) as HTMLButtonElement
+      expect(save.disabled).toBe(true)
+      const reason = document.getElementById(save.getAttribute('aria-describedby') ?? '') as HTMLElement
+      expect(metadataPanel().contains(reason)).toBe(true)
+      expect(reason.textContent).toMatch(/Save is unavailable/)
+      expect(reason.textContent).toMatch(/Cancel to start again from the current values/)
+
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Cancel' }))
+      expect(within(metadataPanel()).getByText('Renamed elsewhere')).toBeTruthy()
+      expect(within(metadataPanel()).queryByText(/while you were editing/)).toBeNull()
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Edit' }))
+      expect((within(metadataPanel()).getByLabelText('Display name') as HTMLInputElement).value).toBe(
+        'Renamed elsewhere',
+      )
+      expect((within(metadataPanel()).getByLabelText('Notes') as HTMLTextAreaElement).value).toBe('Other notes')
+    })
+
+    it('keeps the draft after a failed save and lets the Owner retry it', async () => {
+      let detail = initialAgent()
+      let fail = true
+      const fetchMock = mockFetch({
+        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+        [AGENT_URL]: () => jsonResponse(detail, 200),
+        [AGENT_URL + '/audit']: () => jsonResponse({ agent_id: AGENT_ID, items: [] }, 200),
+        [AGENT_URL + '/metadata']: ({ body }) => {
+          if (fail) {
+            return jsonResponse(
+              { error: { code: 'unavailable', message: 'server database is unavailable', requestId: 'r1', fields: [] } },
+              503,
+            )
+          }
+          const parsed = JSON.parse(body ?? '{}') as { displayName: string | null; notes: string | null }
+          detail = { ...detail, display_name: parsed.displayName ?? '', notes: parsed.notes ?? '' }
+          return jsonResponse(
+            { agent_id: AGENT_ID, display_name: parsed.displayName, notes: parsed.notes },
+            200,
+          )
+        },
+      })
+      renderAt('/admin/agents/' + AGENT_ID + '?section=manage')
+      await screen.findByRole('heading', { level: 1, name: 'Host A Agent' })
+
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Edit' }))
+      fireEvent.change(within(metadataPanel()).getByLabelText('Display name'), {
+        target: { value: '  Host B Agent  ' },
+      })
+      fireEvent.change(within(metadataPanel()).getByLabelText('Notes'), { target: { value: '  Retry notes  ' } })
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Save name and notes' }))
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Confirm save' }))
+
+      expect(await within(metadataPanel()).findByText('server database is unavailable')).toBeTruthy()
+      expect((within(metadataPanel()).getByLabelText('Display name') as HTMLInputElement).value).toBe(
+        '  Host B Agent  ',
+      )
+      expect((within(metadataPanel()).getByLabelText('Notes') as HTMLTextAreaElement).value).toBe('  Retry notes  ')
+      expect(within(metadataPanel()).queryByText(/Saved\. The name and notes/)).toBeNull()
+
+      fail = false
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Confirm save' }))
+      expect(await within(metadataPanel()).findByText(/Saved\. The name and notes are Server-owned/)).toBeTruthy()
+      await screen.findByRole('heading', { level: 1, name: 'Host B Agent' })
+      expect(metadataWrites(fetchMock)).toBe(2)
+    })
+
+    it('states a written value apart from a failed read-back and holds a new edit until the Agent is read again', async () => {
+      let saved = false
+      let readable = false
+      const fetchMock = mockFetch({
+        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+        [AGENT_URL]: () =>
+          saved && !readable
+            ? jsonResponse({ error: { code: 'unavailable', message: 'read failed', requestId: 'r1', fields: [] } }, 503)
+            : jsonResponse(saved ? { ...initialAgent(), display_name: 'Unread', notes: 'Unread notes' } : initialAgent(), 200),
+        [AGENT_URL + '/audit']: () => jsonResponse({ agent_id: AGENT_ID, items: [] }, 200),
+        [AGENT_URL + '/metadata']: () => {
+          saved = true
+          return jsonResponse({ agent_id: AGENT_ID, display_name: 'Unread', notes: 'Unread notes' }, 200)
+        },
+      })
+      renderAt('/admin/agents/' + AGENT_ID + '?section=manage')
+      await screen.findByRole('heading', { level: 1, name: 'Host A Agent' })
+
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Edit' }))
+      fireEvent.change(within(metadataPanel()).getByLabelText('Display name'), { target: { value: 'Unread' } })
+      fireEvent.change(within(metadataPanel()).getByLabelText('Notes'), { target: { value: 'Unread notes' } })
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Save name and notes' }))
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Confirm save' }))
+
+      const written = await within(metadataPanel()).findByText(/Saved\. The name and notes are Server-owned/)
+      expect(written.className).toContain('text-success')
+      const notice = metadataPanel().querySelector('[data-slot="read-back-failed"]') as HTMLElement
+      expect(notice).toBeTruthy()
+      expect(notice.textContent).toMatch(/could not be read back/)
+      expect(notice.getAttribute('role')).toBeNull()
+      expect(screen.getByRole('heading', { level: 1, name: 'Host A Agent' })).toBeTruthy()
+      expect(within(metadataPanel()).queryByRole('textbox')).toBeNull()
+      expect(metadataWrites(fetchMock)).toBe(1)
+
+      const edit = within(metadataPanel()).getByRole('button', { name: 'Edit' }) as HTMLButtonElement
+      expect(edit.disabled).toBe(true)
+      const reason = document.getElementById(edit.getAttribute('aria-describedby') ?? '') as HTMLElement
+      expect(reason.textContent).toMatch(/could not be read back/)
+      expect(reason.textContent).toMatch(/Read the Agent again before editing/)
+      fireEvent.click(edit)
+      expect(within(metadataPanel()).queryByRole('textbox')).toBeNull()
+
+      readable = true
+      fireEvent.click(within(notice).getByRole('button', { name: 'Read the Agent again' }))
+      await screen.findByRole('heading', { level: 1, name: 'Unread' })
+      await waitFor(() => expect(metadataPanel().querySelector('[data-slot="read-back-failed"]')).toBeNull())
+      const released = within(metadataPanel()).getByRole('button', { name: 'Edit' }) as HTMLButtonElement
+      expect(released.disabled).toBe(false)
+      fireEvent.click(released)
+      expect((within(metadataPanel()).getByLabelText('Display name') as HTMLInputElement).value).toBe('Unread')
+      expect((within(metadataPanel()).getByLabelText('Notes') as HTMLTextAreaElement).value).toBe('Unread notes')
+      expect(metadataWrites(fetchMock)).toBe(1)
+    })
+
+    it('offers only Close editor once the Server holds the draft', async () => {
+      let detail = initialAgent()
+      const fetchMock = mockFetch({
+        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+        [AGENT_URL]: () => jsonResponse(detail, 200),
+        [AGENT_URL + '/audit']: () => jsonResponse({ agent_id: AGENT_ID, items: [] }, 200),
+      })
+      renderAt('/admin/agents/' + AGENT_ID + '?section=manage')
+      await screen.findByRole('heading', { level: 1, name: 'Host A Agent' })
+
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Edit' }))
+      fireEvent.change(within(metadataPanel()).getByLabelText('Display name'), { target: { value: '  Landed  ' } })
+      fireEvent.change(within(metadataPanel()).getByLabelText('Notes'), { target: { value: '  Landed notes  ' } })
+      expect(screen.getByRole('tab', { name: /^Manage/ }).textContent).toContain('Unsaved')
+
+      detail = { ...detail, display_name: 'Landed', notes: 'Landed notes' }
+      await backgroundRefresh()
+      await screen.findByRole('heading', { level: 1, name: 'Landed' })
+      expect(within(metadataPanel()).getByText(/The Server now holds this display name and these notes/)).toBeTruthy()
+      expect(within(metadataPanel()).queryByRole('button', { name: 'Save name and notes' })).toBeNull()
+      expect(within(metadataPanel()).queryByRole('button', { name: 'Cancel' })).toBeNull()
+      expect(screen.getByRole('tab', { name: /^Manage/ }).textContent).not.toContain('Unsaved')
+
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Close editor' }))
+      expect(within(metadataPanel()).getByText('Landed')).toBeTruthy()
+      expect(metadataWrites(fetchMock)).toBe(0)
+    })
+
+    it('sends nothing when Save is pressed without changing the metadata', async () => {
+      const fetchMock = mockFetch({
+        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+        [AGENT_URL]: () => jsonResponse(initialAgent(), 200),
+        [AGENT_URL + '/audit']: () => jsonResponse({ agent_id: AGENT_ID, items: [] }, 200),
+      })
+      renderAt('/admin/agents/' + AGENT_ID + '?section=manage')
+      await screen.findByRole('heading', { level: 1, name: 'Host A Agent' })
+
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Edit' }))
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Save name and notes' }))
+      expect(within(metadataPanel()).queryByRole('button', { name: 'Confirm save' })).toBeNull()
+      expect(within(metadataPanel()).queryByRole('textbox')).toBeNull()
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(metadataWrites(fetchMock)).toBe(0)
+    })
   })
 
   it('shows the non-leaking unavailable state for an unknown Agent', async () => {

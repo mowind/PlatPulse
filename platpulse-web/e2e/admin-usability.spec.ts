@@ -58,6 +58,7 @@ for (const theme of THEMES) {
     await page.goto('/admin/agents/' + AGENT + '?section=manage')
     const manage = page.getByRole('tab', { name: /^Manage/ })
     await expect(manage).toHaveAttribute('aria-selected', 'true', { timeout: 20_000 })
+    await page.getByRole('button', { name: 'Edit' }).click()
     await page.getByRole('textbox', { name: 'Display name' }).fill('Unsaved usability draft')
     const unsaved = manage.locator('[data-slot="detail-section-marker"]')
     await expect(unsaved).toHaveText('Unsaved')
