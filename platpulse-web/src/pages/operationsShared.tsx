@@ -22,7 +22,6 @@ export {
   DetailList,
   FormFeedbackNote,
   errorMessage,
-  indeterminateOutcome,
   shortId,
   type FormFeedback,
 } from './notificationShared'

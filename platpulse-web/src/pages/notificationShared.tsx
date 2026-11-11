@@ -30,11 +30,6 @@ export function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message.length > 0 ? error.message : fallback
 }
 
-/** A transport failure means the Server may never have seen the request. */
-export function indeterminateOutcome(error: unknown): boolean {
-  return error instanceof AdminApiError && error.code === 'network_unavailable'
-}
-
 export const INDETERMINATE_OUTCOME =
   'The request may not have reached the Server, so the outcome is unknown. This request id identifies the command whether or not the Server recorded it, so look it up below to reconcile the result; the browser never re-sends automatically.'
 

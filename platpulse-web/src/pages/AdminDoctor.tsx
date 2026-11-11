@@ -8,6 +8,7 @@ import {
   runDoctorEntry,
   useAdminDoctor,
 } from '../api/admin'
+import { DOCTOR_RUN_REFUSALS, mutationOutcome } from '../api/mutationOutcome'
 import { useAuth } from '../auth/AuthContext'
 import { StatusBadge, formatObservedAt } from '../components/StatusBadge'
 import { Button } from '../components/ui/button'
@@ -22,7 +23,6 @@ import {
   OperationProgress,
   OperationStatus,
   errorMessage,
-  indeterminateOutcome,
   recordedAge,
   shortId,
   type FormFeedback,
@@ -97,9 +97,10 @@ export default function AdminDoctor() {
     if (error !== undefined) {
       setFeedback({
         tone: 'error',
-        message: indeterminateOutcome(error)
-          ? INDETERMINATE_OUTCOME
-          : errorMessage(error, 'Unable to queue a Doctor run'),
+        message:
+          mutationOutcome(error, DOCTOR_RUN_REFUSALS) === 'unknown'
+            ? INDETERMINATE_OUTCOME
+            : errorMessage(error, 'Unable to queue a Doctor run'),
       })
       return
     }

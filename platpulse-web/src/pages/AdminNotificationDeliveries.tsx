@@ -9,6 +9,7 @@ import {
   useAdminDeliveries,
 } from '../api/admin'
 import type { AttemptRow, DeliveryRow } from '../api/generated'
+import { DELIVERY_RETRY_REFUSALS, mutationOutcome } from '../api/mutationOutcome'
 import { useAuth } from '../auth/AuthContext'
 import { StatusBadge, formatObservedAt } from '../components/StatusBadge'
 import { Button } from '../components/ui/button'
@@ -26,7 +27,6 @@ import {
   deliveryIsRetryable,
   deliveryStateTone,
   errorMessage,
-  indeterminateOutcome,
   shortId,
   type FormFeedback,
 } from './notificationShared'
@@ -139,7 +139,7 @@ function RetryPanel({ delivery }: { delivery: DeliveryRow }) {
           : 'The Server accepted the retry command and queued the delivery. The state below updates when the worker runs; a provider failure is reported on the delivery, not here.',
       })
     } catch (error) {
-      if (indeterminateOutcome(error)) {
+      if (mutationOutcome(error, DELIVERY_RETRY_REFUSALS) === 'unknown') {
         setReconcileId(requestId)
         setFeedback({ tone: 'error', message: INDETERMINATE_OUTCOME })
       } else if (

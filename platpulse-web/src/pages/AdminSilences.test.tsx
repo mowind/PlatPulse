@@ -203,6 +203,73 @@ describe('PAGE-ADMIN-SILENCES (Alerts Silences)', () => {
       'planned node maintenance',
     )
   })
+  it('treats a gateway JSON failure as an unknown outcome instead of a refusal', async () => {
+    let posts = 0
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/alerts/silences*': async (request) => {
+        if (request.method === 'POST') {
+          posts += 1
+          return jsonResponse(
+            {
+              error: {
+                code: 'bad_gateway',
+                message: 'Upstream request failed',
+                requestId: 'req-gateway',
+                fields: [],
+              },
+            },
+            502,
+          )
+        }
+        return jsonResponse({ silences: [] }, 200)
+      },
+    })
+    renderAt('/admin/alerts/silences')
+
+    await screen.findByRole('heading', { level: 1, name: 'Silences' })
+    fireEvent.change(screen.getByLabelText('Reason'), { target: { value: 'planned node maintenance' } })
+    fireEvent.change(screen.getByLabelText('Starts at'), { target: { value: '2026-03-01T10:00' } })
+    fireEvent.change(screen.getByLabelText('Ends at'), { target: { value: '2026-03-01T12:00' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create Silence' }))
+
+    await screen.findByText(/outcome is unknown/)
+    expect(posts).toBe(1)
+    expect((screen.getByLabelText('Reason') as HTMLInputElement).value).toBe(
+      'planned node maintenance',
+    )
+  })
+
+  it('treats an incomplete error envelope as not a refusal even for a documented code', async () => {
+    let posts = 0
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/alerts/silences*': async (request) => {
+        if (request.method === 'POST') {
+          posts += 1
+          // No requestId/fields: the Server contract is not complete, so this
+          // cannot prove the mutation was refused.
+          return jsonResponse(
+            { error: { code: 'alert_validation', message: 'silence target does not exist' } },
+            400,
+          )
+        }
+        return jsonResponse({ silences: [] }, 200)
+      },
+    })
+    renderAt('/admin/alerts/silences')
+
+    await screen.findByRole('heading', { level: 1, name: 'Silences' })
+    fireEvent.change(screen.getByLabelText('Reason'), { target: { value: 'planned node maintenance' } })
+    fireEvent.change(screen.getByLabelText('Starts at'), { target: { value: '2026-03-01T10:00' } })
+    fireEvent.change(screen.getByLabelText('Ends at'), { target: { value: '2026-03-01T12:00' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create Silence' }))
+
+    await screen.findByText(/outcome is unknown/)
+    expect(posts).toBe(1)
+    expect(screen.queryByText('silence target does not exist')).toBeNull()
+  })
+
   it('rejects incomplete or reversed forms locally without sending them', async () => {
     const posts: unknown[] = []
     mockFetch({
