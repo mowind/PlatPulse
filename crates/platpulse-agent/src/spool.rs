@@ -906,7 +906,7 @@ impl Delivered {
 /// bytes of an unacknowledged send are what goes out again. No transport error
 /// is an acknowledgement: the Report stays queued and the failure is recorded
 /// as the Agent's delivery diagnostic.
-pub(crate) async fn send_oldest<T: ReportTransport>(
+pub(crate) async fn send_oldest<T: ReportTransport + ?Sized>(
     store: &mut AgentStore,
     transport: &T,
     send_budget: SendBudget,

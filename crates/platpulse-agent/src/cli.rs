@@ -357,7 +357,7 @@ pub async fn run_agent(args: &RunArgs) -> Result<crate::runtime::RuntimeExit, Ag
     // answered by the same graceful shutdown once startup finishes, instead of
     // falling through to the default disposition that kills the process with
     // no Closing report and drops the queued log lines.
-    let shutdown_signals = crate::runtime::ShutdownSignals::install()?;
+    let mut shutdown_signals = crate::runtime::ShutdownSignals::install()?;
     tracing::info!("{} starting", crate::startup_version_line());
     let config = AgentConfig::resolve(&args.config)?;
     let _runtime_lock = crate::database::AgentRuntimeLock::acquire(&config.state_db)
@@ -400,15 +400,24 @@ pub async fn run_agent(args: &RunArgs) -> Result<crate::runtime::RuntimeExit, Ag
     // declares are swept: a History Gap for any other Node is refused by the
     // contract, so those rows wait until the Node is declared again.
     purge_out_of_contract_block_summaries(&config, &node_ids, write_permit.clone()).await?;
-    crate::runtime::run(crate::runtime::RuntimeInput {
-        config,
-        validated,
-        node_ids,
-        write_permit,
-        shutdown_signals,
-        drain_deadline: std::time::Duration::from_millis(args.drain_deadline_ms),
-        sender_deadline: std::time::Duration::from_millis(args.sender_deadline_ms),
-    })
+    let report_transport: std::sync::Arc<dyn crate::reporting::ReportTransport> =
+        std::sync::Arc::new(
+            crate::reporting::HttpReportTransport::from_config(&config)
+                .map_err(|error| AgentCliError::Collection(error.to_string()))?,
+        );
+    crate::runtime::run(
+        &crate::runtime::ProductionWorkerFactory,
+        shutdown_signals.recv(),
+        crate::runtime::RuntimeInput {
+            config,
+            validated,
+            node_ids,
+            write_permit,
+            drain_deadline: std::time::Duration::from_millis(args.drain_deadline_ms),
+            sender_deadline: std::time::Duration::from_millis(args.sender_deadline_ms),
+        },
+        report_transport,
+    )
     .await
 }
 
@@ -464,12 +473,15 @@ pub async fn run_shutdown(args: &ShutdownArgs) -> Result<(), AgentCliError> {
         .map_err(|error| AgentCliError::Collection(error.to_string()))?;
     guard_migration_configuration(&config.state_db, &validated).await?;
     let deadline = std::time::Duration::from_millis(args.deadline_ms);
+    let sender = crate::reporting::HttpReportTransport::from_config(&config)
+        .map_err(|error| AgentCliError::Collection(error.to_string()))?;
     let outcome = crate::shutdown::graceful_shutdown_with_permit(
         &config,
         &mut [],
         deadline,
         deadline,
         crate::database::AgentStoreWritePermit::new(),
+        &sender,
     )
     .await
     .map_err(|error| AgentCliError::Collection(error.to_string()))?;
