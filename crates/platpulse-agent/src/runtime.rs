@@ -452,7 +452,8 @@ where
     };
     cancel.cancel();
 
-    let block_deadline = tokio::time::Instant::now() + drain_deadline;
+    let shutdown_deadline = crate::shutdown::ShutdownDeadline::start(drain_deadline);
+    let block_deadline = shutdown_deadline.drain_until();
     if !report_worker_finished {
         match tokio::time::timeout_at(block_deadline, &mut report_worker).await {
             Ok(_) => {}
@@ -598,7 +599,7 @@ where
     let (closing, closing_error) = match crate::shutdown::graceful_shutdown_with_permit(
         &config,
         &mut subscriptions,
-        drain_deadline,
+        shutdown_deadline,
         sender_deadline,
         write_permit,
         transport.as_ref(),

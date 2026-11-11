@@ -472,14 +472,15 @@ pub async fn run_shutdown(args: &ShutdownArgs) -> Result<(), AgentCliError> {
         .validated_inventory()
         .map_err(|error| AgentCliError::Collection(error.to_string()))?;
     guard_migration_configuration(&config.state_db, &validated).await?;
-    let deadline = std::time::Duration::from_millis(args.deadline_ms);
+    let sender_deadline = std::time::Duration::from_millis(args.deadline_ms);
     let sender = crate::reporting::HttpReportTransport::from_config(&config)
         .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    let deadline = crate::shutdown::ShutdownDeadline::start(sender_deadline);
     let outcome = crate::shutdown::graceful_shutdown_with_permit(
         &config,
         &mut [],
         deadline,
-        deadline,
+        sender_deadline,
         crate::database::AgentStoreWritePermit::new(),
         &sender,
     )
