@@ -29,6 +29,7 @@ pub mod recover;
 pub mod redaction;
 pub mod reporting;
 pub mod rpc;
+pub mod runtime;
 pub mod shutdown;
 mod shutdown_record;
 mod spool;

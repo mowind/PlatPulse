@@ -5,6 +5,7 @@ use platpulse_agent::cli::{
     run_enroll, run_generate_node_id, run_persist_report, run_prepare_upgrade, run_recover,
     run_shutdown, run_validate_config,
 };
+use platpulse_agent::runtime::RuntimeExit;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -14,10 +15,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = run(cli).await;
     // Flush queued diagnostics before the final error is printed.
     platpulse_agent::logging::flush();
-    result
+    match result {
+        Ok(Some(RuntimeExit::FailClosed { .. })) => {
+            // A fail-closed worker (for example a data-directory scan blocked
+            // in a thread that cannot be interrupted) must not be waited on by
+            // the Tokio runtime destructor. Leave the process immediately after
+            // the log flush above.
+            std::process::exit(1);
+        }
+        Ok(_) => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
-async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+async fn run(cli: Cli) -> Result<Option<RuntimeExit>, Box<dyn std::error::Error>> {
     let Some(command) = cli.command else {
         let mut cmd = Cli::command();
         cmd.print_help()?;
@@ -30,7 +41,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::GenerateNodeId => run_generate_node_id(),
         Command::ValidateConfig(args) => run_validate_config(&args).await?,
         Command::CollectReport(args) => run_collect_report(&args).await?,
-        Command::Run(args) => run_agent(&args).await?,
+        Command::Run(args) => return Ok(Some(run_agent(&args).await?)),
         Command::Shutdown(args) => run_shutdown(&args).await?,
         Command::PersistReport(args) => run_persist_report(&args).await?,
         Command::Recover(args) => run_recover(&args).await?,
@@ -39,5 +50,5 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             run_checkpoint_create(&args).await?
         }
     }
-    Ok(())
+    Ok(None)
 }
