@@ -1361,6 +1361,7 @@ function MetadataPanel({
                 <Button
                   type="button"
                   aria-disabled={submitting || held || undefined}
+                  aria-describedby={held ? holdReasonId : undefined}
                   className="aria-disabled:cursor-progress aria-disabled:opacity-70"
                   disabled={held}
                   onClick={() => void confirm()}
@@ -1435,7 +1436,13 @@ function MetadataPanel({
               : 'The latest Agent details could not be read, so the name and notes shown may be out of date.'}{' '}
             Read the Agent again before editing.
             {!readBackFailure && (
-              <Button variant="link" size="sm" disabled={reading} onClick={() => void readAgain()}>
+              <Button
+                ref={readAgainRef}
+                variant="link"
+                size="sm"
+                disabled={reading}
+                onClick={() => void readAgain()}
+              >
                 {reading ? 'Reading…' : 'Read the Agent again'}
               </Button>
             )}
