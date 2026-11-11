@@ -110,17 +110,6 @@ async fn ingest_report<I: ReportInventory>(
             "Server is shutting down",
         );
     }
-    let _ingestion = match state.ingestion_guard() {
-        Some(guard) => guard,
-        None => {
-            return error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "shutting_down",
-                "Server is shutting down",
-            );
-        }
-    };
     if validate_report_body_size(body.len()).is_err() {
         return error(
             &request_id.0,
@@ -217,6 +206,23 @@ async fn ingest_report<I: ReportInventory>(
         Ok(tx) => tx,
         Err(db_error) => {
             return storage_failure(&state, &request_id.0, "begin report transaction", &db_error);
+        }
+    };
+    // Take the ingestion guard only once the receipt transaction exists. It
+    // must not be held while waiting for the SQLite write connection or the
+    // retention gate: that wait is not a critical section, and stretching
+    // the guard across it makes graceful shutdown drain work that has not
+    // begun. If shutdown starts before this point, the untouched
+    // transaction is rolled back and the request returns 503.
+    let _ingestion = match state.ingestion_guard() {
+        Some(guard) => guard,
+        None => {
+            return error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "shutting_down",
+                "Server is shutting down",
+            );
         }
     };
 

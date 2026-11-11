@@ -630,8 +630,11 @@ test('a contradicted identity ends its association interval but keeps the Valida
 
     const contradicted = await waitForIdentities(
       server,
-      (rows) => rows.length === 1 && rows[0].state === 'network_identity_mismatch',
-      'a contradicted Node',
+      (rows) =>
+        rows.length === 1 &&
+        rows[0].state === 'network_identity_mismatch' &&
+        rows[0].associationEffective === false,
+      'a contradicted Node with an ended association interval',
     )
     expect(contradicted[0].reason).toContain('does not match this Node')
     expect(contradicted[0].observedValidatorNodeKey).toBeNull()

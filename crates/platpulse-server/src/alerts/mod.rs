@@ -2023,11 +2023,18 @@ async fn record_transition_events(
 /// restart restores timers from persisted state; the sweep applies current
 /// facts immediately).
 pub async fn sweep(state: &crate::http::AppState) -> Result<usize, AlertError> {
+    // Take the write transaction before the ingestion guard. With the SQLite
+    // Backend the pool has one connection, so starting the transaction can
+    // wait behind the retention sweep; holding the guard across that wait
+    // would make graceful shutdown drain a pass that has not begun its
+    // critical section. Once the transaction exists the guard
+    // either succeeds and the pass is drained, or shutdown has started and
+    // the untouched transaction is rolled back.
+    let mut tx = crate::database::begin(state.db().pool()).await?;
     let Some(_guard) = state.ingestion_guard() else {
         return Ok(0);
     };
     let now = now_utc();
-    let mut tx = crate::database::begin(state.db().pool()).await?;
     let mut changes = 0usize;
 
     // A removed Agent (deleted_at) is no longer a subject: the deletion
