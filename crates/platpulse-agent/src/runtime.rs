@@ -468,7 +468,7 @@ where
                 .await
                 {
                     Ok(guard) => guard,
-                    Err(exit) => return Ok(exit),
+                    Err(exit) => return Ok(*exit),
                 };
                 report_worker.abort();
                 let _ = report_worker.await;
@@ -541,7 +541,7 @@ where
                 .await
                 {
                     Ok(guard) => guard,
-                    Err(exit) => return Ok(exit),
+                    Err(exit) => return Ok(*exit),
                 };
                 block_workers.abort_all();
                 while block_workers.join_next().await.is_some() {}
@@ -586,7 +586,7 @@ where
                 .await
                 {
                     Ok(guard) => guard,
-                    Err(exit) => return Ok(exit),
+                    Err(exit) => return Ok(*exit),
                 };
                 delivery_worker.abort();
                 let _ = delivery_worker.await;
@@ -627,7 +627,7 @@ async fn acquire_shutdown_write_fence(
     write_permit: &crate::database::AgentStoreWritePermit,
     deadline: tokio::time::Instant,
     worker_name: &str,
-) -> Result<tokio::sync::OwnedSemaphorePermit, RuntimeExit> {
+) -> Result<tokio::sync::OwnedSemaphorePermit, Box<RuntimeExit>> {
     if let Some(permit) = write_permit.try_acquire() {
         return Ok(permit);
     }
@@ -637,14 +637,14 @@ async fn acquire_shutdown_write_fence(
             tracing::error!(
                 "Agent {worker_name} could not reach a write-safe shutdown point before the deadline; terminating fail-closed"
             );
-            Err(RuntimeExit {
+            Err(Box::new(RuntimeExit {
                 reason: ExitReason::FailClosed {
                     stage: "shutdown write fence",
                 },
                 closing: None,
                 closing_error: None,
                 delivery_error: None,
-            })
+            }))
         }
     }
 }
