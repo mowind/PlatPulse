@@ -19,6 +19,9 @@ import {
 } from '../adminNodesReturn'
 import {
   AdminApiError,
+  adminNodeDetailQueryKey,
+  adminQueryClient,
+  fetchAdminNode,
   purgeNode,
   updateNodeMetadata,
   useAdminNodeDetail,
@@ -48,6 +51,7 @@ import { CardX } from '../components/ui/card-x'
 import { Empty } from '../components/ui/empty'
 import { Input, Select } from '../components/ui/input'
 import { readBackRecovered, type DetailRead, type DetailReadResult, type ReadBackFailure } from '../lib/readBack'
+import { readAfterWrite } from '../lib/readAfterWrite'
 import { ReadBackNotice } from '../components/ReadBackNotice'
 import { cn } from '../lib/utils'
 import { spoolBacklogReading } from '../spoolBacklog'
@@ -942,7 +946,13 @@ export function AdminNodeDetail() {
                           errorUpdateCount: query.errorUpdateCount,
                           dataUpdatedAt: query.dataUpdatedAt,
                         }}
-                        readDetail={() => query.refetch({ cancelRefetch: false })}
+                        readDetail={() =>
+                          readAfterWrite(
+                            adminQueryClient,
+                            adminNodeDetailQueryKey(generation, data.node_id),
+                            (context) => fetchAdminNode(data.node_id, context.signal),
+                          )
+                        }
                       />
                       <PurgePanel node={data} csrfToken={csrfToken} onPurged={setPurged} />
                     </>
@@ -1202,6 +1212,8 @@ function MetadataPanel({
   // successful read of this Node's detail.
   const [readBackFailure, setReadBackFailure] = useState<ReadBackFailure | null>(null)
   if (readBackFailure && readBackRecovered(readBackFailure, detailRead)) setReadBackFailure(null)
+  // A read-only retry of this Node's detail; one at a time.
+  const [reading, setReading] = useState(false)
   // Re-renders once to move the focus when nothing else changes.
   const [, setFocusTick] = useState(0)
   const panelRef = useRef<HTMLDivElement>(null)
@@ -1210,17 +1222,23 @@ function MetadataPanel({
   const editRef = useRef<HTMLButtonElement>(null)
   const promptRef = useRef<HTMLSpanElement>(null)
   const readAgainRef = useRef<HTMLButtonElement>(null)
-  const focusNext = useRef<'input' | 'edit' | 'prompt' | null>(null)
+  const focusNext = useRef<'input' | 'edit' | 'prompt' | 'readAgain' | null>(null)
   useEffect(() => {
     const target = focusNext.current
     if (!target) return
-    focusNext.current = null
     // A section that is not shown never takes the focus.
-    if (panelRef.current?.closest('[hidden]')) return
+    if (panelRef.current?.closest('[hidden]')) {
+      focusNext.current = null
+      return
+    }
     // With a new round open there is no Edit button; its input takes it.
     const element =
-      { input: inputRef, edit: editRef, prompt: promptRef }[target].current ??
+      { input: inputRef, edit: editRef, prompt: promptRef, readAgain: readAgainRef }[target].current ??
       (target === 'edit' ? inputRef.current : null)
+    // A control disabled by a hold cannot take the focus yet; wait for the
+    // render that lifts the hold instead of dropping the move.
+    if (element instanceof HTMLButtonElement && element.disabled) return
+    focusNext.current = null
     element?.focus()
   })
 
@@ -1230,11 +1248,17 @@ function MetadataPanel({
   // is in flight until the refetched detail has arrived.
   const serverMoved = edit !== null && !submitting && current !== edit.base
   if (serverMoved && confirmed !== null) setConfirmed(null)
+  // The detail this edit would start from is not authoritative: its last read
+  // failed (after a write, or on a page refresh) and the value on screen may
+  // be earlier than the Server's. No round may start or save against it.
+  const held = readBackFailure !== null || detailRead.isError
+  if (held && confirmed !== null) setConfirmed(null)
   // The Server already holds the draft — for example a write whose answer
   // was lost reached it after all. Nothing is left to save.
   const serverHasDraft = serverMoved && current === displayNameToSend(edit.draft)
   const movedNoticeId = 'display-name-server-moved-' + node.node_id
   const nameErrorId = 'display-name-error-' + node.node_id
+  const holdReasonId = 'display-name-hold-' + node.node_id
 
   // Unsaved while a changed draft, an open confirmation or a save in flight
   // remains — but not once the Server already holds the draft: nothing is
@@ -1245,6 +1269,7 @@ function MetadataPanel({
   )
 
   function startEdit() {
+    if (held) return
     setEdit({ draft: current, base: current })
     setConfirmed(null)
     setMessage(null)
@@ -1284,7 +1309,7 @@ function MetadataPanel({
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     // A draft against a name the Server no longer holds cannot be saved.
-    if (inFlight.current || edit === null || serverMoved) return
+    if (inFlight.current || edit === null || serverMoved || held) return
     setMessage(null)
     setError(null)
     const name = nameToSendFromField()
@@ -1292,12 +1317,17 @@ function MetadataPanel({
       setConfirmed(null)
       return
     }
+    // Saving a name the Server already holds sends nothing.
+    if (name === displayNameToSend(edit.base)) {
+      cancel()
+      return
+    }
     setConfirmed(name)
     focusNext.current = 'prompt'
   }
 
   async function confirm() {
-    if (inFlight.current || confirmed === null) return
+    if (inFlight.current || confirmed === null || held) return
     // Confirm is a plain button: it re-runs Save's check and the form's own
     // rules instead of trusting that the Save step was valid, and sends
     // nothing but the name it confirmed.
@@ -1325,14 +1355,12 @@ function MetadataPanel({
         return
       }
       // The saved name is the one the Server reads back; wait for it so the
-      // read view and the header change together. A read that finished
-      // before the write did is not that read-back, so read once more.
-      const writtenAt = Date.now()
-      let readBack = await readDetail()
-      if (!readBack.isError && readBack.dataUpdatedAt < writtenAt) readBack = await readDetail()
+      // read view and the header change together. readDetail cancels every
+      // read begun before this point, so it cannot return the earlier value.
+      const readBack = await readDetail()
       const active = document.activeElement
       if (!active || active === document.body || panelRef.current?.contains(active)) {
-        focusNext.current = 'edit'
+        focusNext.current = readBack.isError ? 'readAgain' : 'edit'
       }
       setMessage('Display name is now "' + result.displayName + '".')
       setReadBackFailure(
@@ -1351,11 +1379,20 @@ function MetadataPanel({
   /** Reads the Node again after a failed read-back. It only reads; the
    *  written name is never sent again. */
   async function readAgain() {
-    const result = await readDetail()
-    // The notice (and this button) leave on success: keep the keyboard here.
-    if (!result.isError && document.activeElement === readAgainRef.current) {
-      focusNext.current = 'edit'
-      setFocusTick((tick) => tick + 1)
+    if (reading) return
+    // The notice may leave before this read resolves; decide where the
+    // keyboard goes from where it was when the read started.
+    const keepFocus = document.activeElement === readAgainRef.current
+    setReading(true)
+    try {
+      const result = await readDetail()
+      // The notice (and this button) leave on success: keep the keyboard here.
+      if (!result.isError && keepFocus) {
+        focusNext.current = 'edit'
+        setFocusTick((tick) => tick + 1)
+      }
+    } finally {
+      setReading(false)
     }
   }
 
@@ -1417,13 +1454,14 @@ function MetadataPanel({
                 {confirmed !== null ? (
                   <>
                     <span ref={promptRef} tabIndex={-1} className="text-xs text-muted-foreground outline-none">
-                      Rename this Node in the Server-owned metadata? The Agent Inventory,
-                      endpoint, and Node ID are not touched.
+                      Rename this Node in the Server-owned metadata? The display name will become
+                      "{confirmed}". The Agent Inventory, endpoint, and Node ID are not touched.
                     </span>
                     <Button
                       type="button"
-                      aria-disabled={submitting || undefined}
+                      aria-disabled={submitting || held || undefined}
                       className="aria-disabled:cursor-progress aria-disabled:opacity-70"
+                      disabled={held}
                       onClick={() => void confirm()}
                     >
                       {submitting ? 'Saving…' : 'Confirm rename'}
@@ -1443,8 +1481,12 @@ function MetadataPanel({
                 ) : serverHasDraft ? null : (
                   <Button
                     type="submit"
-                    disabled={serverMoved}
-                    aria-describedby={serverMoved ? movedNoticeId : undefined}
+                    disabled={serverMoved || held}
+                    aria-describedby={
+                      [serverMoved ? movedNoticeId : null, held ? holdReasonId : null]
+                        .filter((id) => id !== null)
+                        .join(' ') || undefined
+                    }
                   >
                     Save
                   </Button>
@@ -1458,9 +1500,29 @@ function MetadataPanel({
             ) : (
               <span className="inline-flex flex-wrap items-center gap-2">
                 {current.trim() || 'None — Node ID is shown'}
-                <Button ref={editRef} variant="link" size="sm" onClick={startEdit}>
+                <Button
+                  ref={editRef}
+                  variant="link"
+                  size="sm"
+                  onClick={startEdit}
+                  disabled={held}
+                  aria-describedby={held ? holdReasonId : undefined}
+                >
                   Edit
                 </Button>
+              </span>
+            )}
+            {held && (
+              <span id={holdReasonId} className="mt-1 block text-xs text-muted-foreground">
+                {readBackFailure
+                  ? 'The display name could not be read back after the last save, so this page may still show the earlier name.'
+                  : 'The latest Node details could not be read, so the name shown may be out of date.'}{' '}
+                Read the Node again before editing.
+                {!readBackFailure && (
+                  <Button variant="link" size="sm" disabled={reading} onClick={() => void readAgain()}>
+                    {reading ? 'Reading…' : 'Read the Node again'}
+                  </Button>
+                )}
               </span>
             )}
             <span
@@ -1477,6 +1539,7 @@ function MetadataPanel({
                 readAgainLabel="Read the Node again"
                 readAgainRef={readAgainRef}
                 onReadAgain={() => void readAgain()}
+                reading={reading}
               >
                 The display name was saved, but the Node could not be read back afterwards, so this
                 page may still show the earlier name. The save is not sent again.
