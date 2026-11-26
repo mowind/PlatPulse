@@ -2138,7 +2138,7 @@ pub(crate) async fn current_spool_diagnostics(
         PREFLUSH_SPOOL_BYTES as i64,
         String::new(),
     ));
-    let shutdown = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>, Option<String>, Option<i64>, Option<String>)>(
+    let shutdown = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>, Option<String>, Option<i64>, Option<i64>)>(
         "SELECT shutdown_state, shutdown_started_at, shutdown_deadline_at, shutdown_finished_at, shutdown_last_error, shutdown_forced, shutdown_report_id, shutdown_unresolved_from, shutdown_unresolved_to FROM agent_state WHERE singleton=1",
     ).fetch_optional(store.connection()).await?;
     let (
@@ -2184,7 +2184,7 @@ pub(crate) async fn current_spool_diagnostics(
         shutdown_finished_at: shutdown_finished_at.and_then(|value| value.parse().ok()),
         shutdown_unresolved_range: shutdown_unresolved_from
             .zip(shutdown_unresolved_to)
-            .map(|(from, to)| (from.max(0) as u64, to.parse::<u64>().unwrap_or(0))),
+            .map(|(from, to)| (from.max(0) as u64, to.max(0) as u64)),
         shutdown_last_error,
         shutdown_forced: Some(shutdown_forced == Some(1)),
         shutdown_report_id: shutdown_report_id.and_then(|value| value.parse().ok()),
@@ -5086,5 +5086,27 @@ mod tests {
                 .to_string()
                 .starts_with("invalid persisted Agent identity:")
         );
+    }
+
+    /// A shutdown drain that left heights unresolved stores the range as
+    /// INTEGER; reading it back must not fail, or every restart's boot
+    /// recovery fails while building the Closing report's diagnostics.
+    #[tokio::test]
+    async fn spool_diagnostics_read_a_recorded_unresolved_shutdown_range() {
+        let dir = tempdir().unwrap();
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(dir.path().join("agent.db")))
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO agent_state (singleton, updated_at) VALUES (1, 'now')")
+            .execute(store.connection())
+            .await
+            .unwrap();
+        crate::shutdown_record::record_unresolved(store.connection(), (5, 9), "drain deadline")
+            .await
+            .unwrap();
+
+        let diagnostics = current_spool_diagnostics(&mut store).await.unwrap();
+
+        assert_eq!(diagnostics.shutdown_unresolved_range, Some((5, 9)));
     }
 }
